@@ -49,11 +49,13 @@ with c7:
 # ---------- Data Fetch (Intraday or Daily, with safe fallbacks) ----------
 with st.spinner("Fetching market data..."):
     if data_mode.startswith("🔴"):
-        # Live intraday preference; fetch_smart will cascade if not available
-        df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
-    else:
-        # Force daily safe mode for weekends/holidays/cloud limits
-        df, used = fetch_smart(symbol, prefer=("3mo", "1d"))
+    # Live intraday with fallback
+    df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+else:
+    # Direct Daily Mode (Cloud Safe)
+    import yfinance as yf
+    df = yf.download(symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
+    used = ("3mo", "1d")
 
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
 
