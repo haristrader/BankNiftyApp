@@ -2,12 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-from utils import (
-    DEFAULT_SYMBOL,           # should be "NSEBANK.NS"
-    fetch_smart,              # NSE-first data fetcher with fallbacks
-    generate_signals_50pct,   # 50% rule signals
-    simulate_atm_option_trades,  # ATM options simulator with trailing ladder
-)
+# ---- single-line imports to avoid SyntaxError from broken multi-line group ----
+from utils import DEFAULT_SYMBOL
+from utils import fetch_smart
+from utils import generate_signals_50pct
+from utils import simulate_atm_option_trades
 
 # ------------------------------------------------------
 # Backtest – BankNifty ATM Options (Intraday/Daily Toggle)
@@ -59,7 +58,7 @@ with st.spinner("Fetching market data..."):
         # Intraday preference; utils will try NSE 1st then fallback combos
         df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
     else:
-        # Force Daily Safe mode (NSE 1D first). Reliable on cloud/weekends.
+        # Force Daily Safe mode (reliable on cloud/weekends)
         df, used = fetch_smart(symbol, prefer=("3mo", "1d"))
 
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
@@ -108,9 +107,10 @@ def _max_drawdown(series: pd.Series) -> float:
     """Max drawdown of an equity curve (negative value)."""
     if series is None or len(series) == 0:
         return 0.0
-    roll_max = pd.Series(series).cummax()
-    dd = pd.Series(series) - roll_max
-    return float(dd.min())  # usually negative
+    s = pd.Series(series)
+    roll_max = s.cummax()
+    dd = s - roll_max
+    return float(dd.min())  # negative
 
 if tr is None or tr.empty:
     st.info("No closed trades in this range yet. Try Daily mode or a longer period.")
@@ -144,8 +144,7 @@ else:
     st.line_chart(equity_series, height=220)
 
 # =========================
-# 7) Save for AI Console (NOT for Dashboard score)
-#    + Save equity curve (serialized) for learning
+# 7) Save for AI Console (NOT for Dashboard score) + equity curve
 # =========================
 def _serialize_equity(eq: pd.Series) -> list[dict]:
     """Return list of {'t': ISO, 'v': float} for AI console storage."""
@@ -153,12 +152,9 @@ def _serialize_equity(eq: pd.Series) -> list[dict]:
         return []
     if isinstance(eq, pd.Series):
         items = eq.reset_index()
-        # If index is datetime, keep ISO; otherwise just string index
-        if isinstance(items.iloc[0, 0], pd.Timestamp):
-            return [{"t": str(items.iloc[i, 0]), "v": float(items.iloc[i, 1])} for i in range(len(items))]
-        else:
-            return [{"t": str(items.iloc[i, 0]), "v": float(items.iloc[i, 1])} for i in range(len(items))]
-    # fallback: plain list
+        tcol = items.columns[0]
+        vcol = items.columns[1]
+        return [{"t": str(items.iloc[i][tcol]), "v": float(items.iloc[i][vcol])} for i in range(len(items))]
     try:
         return [{"t": str(i), "v": float(v)} for i, v in enumerate(list(eq))]
     except Exception:
@@ -180,7 +176,7 @@ perf_payload = {
     "pnl_total": float(pnl_total),
     "max_drawdown": float(max_dd),
     "backtest_score": float(backtest_score),            # learning signal only
-    "equity_curve": _serialize_equity(equity_series),   # <— stored for AI insights
+    "equity_curve": _serialize_equity(locals().get("equity_series", pd.Series(dtype=float))),  # serialized curve
 }
 
 st.session_state.setdefault("performance", {})
