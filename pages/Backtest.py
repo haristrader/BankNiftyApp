@@ -1,20 +1,21 @@
+# pages/Backtest.py
 import streamlit as st
 import pandas as pd
+import numpy as np
 
+# utils.py must provide these (we already added them earlier):
 from utils import (
-    DEFAULT_SYMBOL,
-    fetch_smart,
-    generate_signals_50pct,
-    simulate_atm_option_trades,
+    DEFAULT_SYMBOL,         # recommend "NSEBANK.NS"
+    fetch_smart,            # smart fetch with fallbacks
+    generate_signals_50pct, # 50% rule signals
+    simulate_atm_option_trades,  # ATM options simulator (CE/PE) with trailing ladder
 )
-
-# ------------------------------------------------------
-# Backtest – BankNifty ATM Options (with Data Mode Toggle)
-# ------------------------------------------------------
 
 st.title("🧪 Backtest (Trailing SL) — BankNifty ATM Options")
 
-# ---------- TRADER-STYLE DATA MODE TOGGLE ----------
+# =========================
+# 1) Data Mode (Trader Style)
+# =========================
 st.markdown("### 📊 Data Source Mode")
 data_mode = st.radio(
     label="Pick data mode",
@@ -24,10 +25,11 @@ data_mode = st.radio(
     label_visibility="collapsed",
 )
 
-# ---------- Inputs ----------
+# =========================
+# 2) Controls
+# =========================
 c1, c2, c3 = st.columns([2, 1, 1])
 with c1:
-    # DEFAULT_SYMBOL should be "NSEBANK.NS" in utils.py (cloud-safe)
     symbol = st.text_input("Symbol", value=DEFAULT_SYMBOL)
 with c2:
     prefer_period = st.selectbox("Preferred Period", ["5d", "14d", "30d"], index=0)
@@ -46,16 +48,18 @@ with c6:
 with c7:
     theta = st.number_input("Theta per candle (sim)", min_value=0.0, max_value=1.0, value=0.00, step=0.01)
 
-# ---------- Data Fetch (Intraday or Daily, with safe fallbacks) ----------
+# =========================
+# 3) Data Fetch
+# =========================
 with st.spinner("Fetching market data..."):
     if data_mode.startswith("🔴"):
-    # Live intraday with fallback
-    df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+        # Intraday preferred; fetch_smart will cascade to safe combos if needed.
+        df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
     else:
-    # Direct Daily Mode (Cloud Safe)
-    import yfinance as yf
-    df = yf.download(symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
-    used = ("3mo", "1d")
+        # Force daily mode directly (cloud-safe; avoids intraday throttling)
+        import yfinance as yf
+        df = yf.download(symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
+        used = ("3mo", "1d")
 
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
 
@@ -63,28 +67,30 @@ if df is None or df.empty:
     st.error("⚠ No data available even after fallbacks.")
     st.stop()
 
-# ---------- Signal Generation (Previous Candle 50% Rule) ----------
+# =========================
+# 4) Generate Signals (50% rule)
+# =========================
 sig_df = generate_signals_50pct(df, mid_factor=0.5)
-
-# Quick view of last few signals
 with st.expander("Recent Signals (last 12)", expanded=False):
     st.dataframe(sig_df[["close", "signal"]].tail(12), use_container_width=True)
 
-# ---------- Simulation ----------
+# =========================
+# 5) Run Simulation
+# =========================
 st.subheader("Simulation Results")
 
 if pricing_mode.startswith("ATM"):
-    tr, equity, score = simulate_atm_option_trades(
+    tr, equity, backtest_score = simulate_atm_option_trades(
         sig_df,
         signals_col="signal",
         init_sl_pts=init_sl,
         lot_size=lot,
-        mode="delta",               # delta-based ATM model
+        mode="delta",               # delta-based ATM model (CE/PE)
         theta_per_candle=theta,
     )
 else:
-    # Index proxy (delta ~ 1, no decay) using same simulator for consistency
-    tr, equity, score = simulate_atm_option_trades(
+    # Index proxy (delta ≈ 1, no decay) using same engine for consistency
+    tr, equity, backtest_score = simulate_atm_option_trades(
         sig_df,
         signals_col="signal",
         init_sl_pts=init_sl,
@@ -93,35 +99,72 @@ else:
         theta_per_candle=0.0,
     )
 
+# =========================
+# 6) Metrics + Displays
+# =========================
+def _max_drawdown(series: pd.Series) -> float:
+    """Max drawdown of an equity curve (in same units as series)."""
+    if series is None or series.empty:
+        return 0.0
+    roll_max = series.cummax()
+    dd = series - roll_max
+    return float(dd.min())  # negative value
+
 if tr is None or tr.empty:
-    st.info("No closed trades in this range yet. Try a longer period or different interval.")
-    # Save neutral score so Dashboard remains consistent
-    st.session_state.setdefault("scores", {})
-    st.session_state["scores"]["backtest"] = 50.0
+    st.info("No closed trades in this range yet. Try Daily mode or a longer period.")
+    wins = losses = total = 0
+    winrate = 0.0
+    pnl_total = 0.0
+    max_dd = 0.0
+    equity_series = pd.Series(dtype=float)
 else:
-    # Compute quick stats
+    # Compute robust metrics
+    total = int(len(tr))
     wins = int((tr["pnl_points"] > 0).sum())
     losses = int((tr["pnl_points"] <= 0).sum())
-    total = int(len(tr))
     winrate = (wins / total) * 100.0 if total > 0 else 0.0
     pnl_total = float(tr["pnl_points"].sum())
 
+    if equity is None or (isinstance(equity, pd.Series) and equity.empty) or ("cum_pnl" not in tr.columns):
+        equity_series = tr["pnl_points"].cumsum()
+    else:
+        equity_series = equity
+
+    max_dd = _max_drawdown(equity_series)
+
+    # KPI cards
     cA, cB, cC, cD = st.columns(4)
     cA.metric("Trades", total)
     cB.metric("Win Rate", f"{winrate:.1f}%")
     cC.metric("Total PnL (₹)", f"{pnl_total:,.0f}")
-    cD.metric("Backtest Score", f"{score:.0f}/100")
+    cD.metric("Max Drawdown (₹)", f"{max_dd:,.0f}")
 
     st.dataframe(tr.tail(50), use_container_width=True)
+    st.line_chart(equity_series, height=220)
 
-    if equity is not None and not isinstance(equity, pd.Series) and "cum_pnl" in tr.columns:
-        # Backward compatibility if equity wasn’t returned as Series
-        st.line_chart(tr["cum_pnl"], height=220)
-    elif equity is not None and not equity.empty:
-        st.line_chart(equity, height=220)
+# =========================
+# 7) Save for AI Console (NOT for Dashboard score)
+# =========================
+perf_payload = {
+    "symbol": symbol,
+    "data_mode": "intraday" if data_mode.startswith("🔴") else "daily",
+    "used_period": used[0],
+    "used_interval": used[1],
+    "pricing_mode": "ATM_Delta" if pricing_mode.startswith("ATM") else "IndexProxy",
+    "init_sl": float(init_sl),
+    "lot_size": int(lot),
+    "theta": float(theta),
+    "trades": int(total),
+    "wins": int(wins),
+    "losses": int(losses),
+    "winrate": float(winrate),
+    "pnl_total": float(pnl_total),
+    "max_drawdown": float(max_dd),
+    "backtest_score": float(backtest_score),  # learning signal only
+}
 
-    # Save score for Dashboard fusion
-    st.session_state.setdefault("scores", {})
-    st.session_state["scores"]["backtest"] = float(score)
+# Place into session_state for AI Console to learn from
+st.session_state.setdefault("performance", {})
+st.session_state["performance"]["backtest"] = perf_payload
 
-st.success("✅ Backtest score updated for Dashboard fusion.")
+st.success("✅ Backtest performance saved for AI Console learning (no impact on Dashboard score).")
