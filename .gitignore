@@ -1,0 +1,19 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets (if you add later)
+.streamlit/secrets.toml
+
+# Virtual envs
+venv/
+.venv/
+env/
+trading_env/
