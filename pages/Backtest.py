@@ -25,7 +25,8 @@ theta = st.number_input("Theta per candle (sim)", min_value=0.0, max_value=1.0, 
 
 # ---------- Data ----------
 with st.spinner("Fetching data ..."):
-    df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+    # Force Daily Data for stable backtesting (Cloud Safe)
+df, used = fetch_smart(symbol, prefer=("3mo", "1d"))
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
 
 if df.empty:
