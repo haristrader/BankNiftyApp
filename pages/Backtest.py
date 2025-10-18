@@ -19,7 +19,13 @@ def safe_fetch(sym, per, iv):
         if not df.empty: return df, (p,i)
     return pd.DataFrame(), (per, iv)
 
-df, used = safe_fetch(symbol, period, interval)
+# Safe fetch: Yahoo allows only limited intraday periods
+# Primary attempt: 5-day / 5-min data
+df = fetch(symbol, period="5d", interval="5m", auto_adjust=True)
+
+# Fallback to Daily if intraday fails or weekend
+if df is None or df.empty:
+    df = fetch(symbol, period="3mo", interval="1d", auto_adjust=True)
 st.caption(f"Using: period={used[0]} interval={used[1]}")
 if df.empty:
     st.error("No data available even after fallbacks.")
