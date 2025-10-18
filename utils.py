@@ -5,6 +5,131 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+# -------- ATM Option helpers (delta-sim mode) --------
+def _round_to_strike(x: float, step: int = 100) -> int:
+    # BankNifty strikes: 100 step
+    return int(round(x / step) * step)
+
+def generate_signals_50pct(df: pd.DataFrame, mid_factor: float = 0.5) -> pd.DataFrame:
+    """Create BUY/SELL/HOLD signals using previous-candle 50% rule."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    sig = ["HOLD"]
+    for i in range(1, len(out)):
+        ph, pl = float(out["high"].iloc[i-1]), float(out["low"].iloc[i-1])
+        prev_mid = pl + (ph - pl) * mid_factor
+        c = out.iloc[i]
+        if (c["low"] >= prev_mid) and (c["close"] > ph):
+            sig.append("BUY")
+        elif (c["high"] <= prev_mid) and (c["close"] < pl):
+            sig.append("SELL")
+        else:
+            sig.append("HOLD")
+    out["signal"] = sig
+    return out
+
+def simulate_atm_option_trades(
+    df: pd.DataFrame,
+    signals_col: str = "signal",
+    init_sl_pts: float = 10.0,
+    lot_size: int = 15,               # BankNifty lot (update when exchange changes)
+    mode: str = "delta",              # "delta" (ATM ~0.5) or "index" proxy
+    delta_atm: float = 0.5,           # ATM delta approximation
+    theta_per_candle: float = 0.0,    # simple time decay per candle (0 for off)
+):
+    """
+    Simulate trades on ATM options using underlying candles:
+    - On BUY → pick CE ATM strike (nearest 100) at entry candle
+    - On SELL → pick PE ATM strike (nearest 100)
+    - Price model:
+        mode="delta":  premium change ≈ delta_atm * dUnderlying  - theta_per_candle
+        mode="index":  premium change ≈ dUnderlying  (old index-proxy)
+    - Trailing ladder (10→BE, 20→+10, 30→+15, 50→trail 50%)
+    Returns: trades_df, equity_series (cum PnL), backtest_score(0-100 by winrate)
+    """
+    if df is None or df.empty or signals_col not in df.columns:
+        return pd.DataFrame(), pd.Series(dtype=float), 50.0
+
+    prices = df["close"].astype(float).values
+    times = list(df.index)
+
+    pos=None; entry_p=None; sl=None
+    # For options we track premium. Start premium at 0 for change calc; add base at entry:
+    # We'll build premium series incrementally from entry using delta approximation.
+    # To keep realistic base, assume entry premium ≈ max(0, 0.01*underlying)  (≈1% of index)
+    base_mult = 0.01
+
+    trades=[]
+    prem = 0.0
+
+    for i in range(len(df)-1):
+        sig = str(df[signals_col].iloc[i])
+        u_now = float(prices[i])
+        u_next = float(prices[i+1])
+        du = u_next - u_now
+        t_next = times[i+1]
+
+        # compute option premium tick-to-tick change
+        if mode == "delta":
+            dp = delta_atm * du - theta_per_candle
+        else:  # "index" proxy
+            dp = du
+
+        if pos is None:
+            if sig == "BUY":
+                pos="CE"                       # Long Call ATM
+                entry_p = max(5.0, base_mult*u_next)  # entry premium baseline
+                prem = entry_p
+                sl = entry_p - init_sl_pts
+            elif sig == "SELL":
+                pos="PE"                       # Long Put ATM
+                entry_p = max(5.0, base_mult*u_next)
+                prem = entry_p
+                sl = entry_p - init_sl_pts
+            continue
+
+        # update premium by model
+        # For CE: +dp when du>0 ; For PE: invert sign
+        if pos == "CE":
+            prem = prem + max(-prem, dp)   # premium cannot go < 0
+            profit = prem - entry_p
+            # trailing ladder
+            if profit >= 10 and sl < entry_p:          sl = entry_p
+            if profit >= 20 and sl < entry_p + 10:     sl = entry_p + 10
+            if profit >= 30 and sl < entry_p + 15:     sl = entry_p + 15
+            if profit >= 50:
+                new_sl = prem - (profit * 0.5)
+                if new_sl > sl: sl = new_sl
+            # exit on SL
+            if prem <= sl:
+                trades.append(dict(side="LONG CE", entry=entry_p, exit=sl, exit_time=t_next,
+                                   pnl=(sl-entry_p)*lot_size))
+                pos=None; entry_p=None; sl=None
+
+        elif pos == "PE":
+            prem = prem + max(-prem, -dp)  # put gains when underlying falls
+            profit = prem - entry_p
+            if profit >= 10 and sl < entry_p:          sl = entry_p
+            if profit >= 20 and sl < entry_p + 10:     sl = entry_p + 10
+            if profit >= 30 and sl < entry_p + 15:     sl = entry_p + 15
+            if profit >= 50:
+                new_sl = prem - (profit * 0.5)
+                if new_sl > sl: sl = new_sl
+            if prem <= sl:
+                trades.append(dict(side="LONG PE", entry=entry_p, exit=sl, exit_time=t_next,
+                                   pnl=(sl-entry_p)*lot_size))
+                pos=None; entry_p=None; sl=None
+
+    tr = pd.DataFrame(trades)
+    if tr.empty:
+        return tr, pd.Series(dtype=float), 50.0
+
+    tr["pnl_points"] = tr["pnl"]        # already in option points * lot
+    tr["cum_pnl"] = tr["pnl_points"].cumsum()
+    winrate = float((tr["pnl_points"] > 0).mean() * 100.0)
+    score = float(np.clip(winrate, 0, 100))
+    return tr, tr["cum_pnl"], score
 # ------------------ Defaults & Weights ------------------
 DEFAULT_SYMBOL = "^NSEBANK"
 
