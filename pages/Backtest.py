@@ -51,7 +51,7 @@ with st.spinner("Fetching market data..."):
     if data_mode.startswith("🔴"):
     # Live intraday with fallback
     df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
-else:
+    else:
     # Direct Daily Mode (Cloud Safe)
     import yfinance as yf
     df = yf.download(symbol, period="3mo", interval="1d", progress=False, auto_adjust=True)
