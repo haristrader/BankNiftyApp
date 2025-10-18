@@ -12,7 +12,7 @@ st.title("🧪 Backtest (Trailing SL) — BankNifty ATM Options")
 # ---------- Controls ----------
 c1, c2, c3 = st.columns([2,1,1])
 with c1:
-    symbol = st.text_input("Symbol", value=DEFAULT_SYMBOL)
+    symbol = st.text_input("Symbol", value="NSEBANK.NS")
 with c2:
     prefer_period = st.selectbox("Preferred Period", ["5d","14d","30d"], index=0)
 with c3:
