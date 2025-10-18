@@ -131,7 +131,7 @@ def simulate_atm_option_trades(
     score = float(np.clip(winrate, 0, 100))
     return tr, tr["cum_pnl"], score
 # ------------------ Defaults & Weights ------------------
-DEFAULT_SYMBOL = "^NSEBANK"
+DEFAULT_SYMBOL = "NSEBANK.NS"
 
 WEIGHTS_DEFAULT = {
     "trend": 20,
