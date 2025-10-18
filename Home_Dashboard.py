@@ -113,9 +113,20 @@ def decision_text(score: float) -> tuple[str, str]:
     else:
         return ("HOLD", "Neutral zone — let price confirm; protect capital and wait for alignment.")
 
-# ---------- Decision Badge + Linear Gauge ----------
+# ---------- Decision Engine ----------
+def decision_text(score: float):
+    if score >= 70:
+        return ("BUY", "Market in **Bullish Control** — dips may be buying opportunities.")
+    elif score <= 30:
+        return ("SELL", "Market in **Bearish Control** — rallies may face selling pressure.")
+    else:
+        return ("HOLD", "Neutral zone — wait for clearer confirmation before entering.")
+
+# Get label and message
+label, msg = decision_text(final_score)
+
 st.markdown("### 🎯 Final Decision")
-col_dec, col_gauge = st.columns([1,3])
+col_dec, col_gauge = st.columns([1, 3])
 
 with col_dec:
     if label == "BUY":
@@ -126,10 +137,9 @@ with col_dec:
         st.markdown(f"<h3 style='color:orange;'>🟡 {label}</h3>", unsafe_allow_html=True)
 
 with col_gauge:
-    st.progress(int(final_score))  # Linear Gauge
+    st.progress(int(final_score))
     st.write(f"**Final Score: {final_score}/100**")
 
-# Trader Message
 st.write(msg)
 
 # rationale bullets
