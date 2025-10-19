@@ -56,7 +56,12 @@ with c7:
 with st.spinner("Fetching market data..."):
     if data_mode.startswith("🔴"):
         # Intraday preference; utils will try NSE 1st then fallback combos
-        df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+        df, used, msg = fetch_smart(...)
+if msg:
+    st.info(msg)
+if df.empty:
+    st.warning("⏳ No intraday data available right now.")
+    st.stop()
     else:
         # Force Daily Safe mode (reliable on cloud/weekends)
         df, used, msg = fetch_smart(...)
