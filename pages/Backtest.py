@@ -1,12 +1,14 @@
+# pages/Backtest.py
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-# ---- single-line imports to avoid SyntaxError from broken multi-line group ----
+# ---- keep single-line imports (safer on Streamlit Cloud) ----
 from utils import DEFAULT_SYMBOL
 from utils import fetch_smart
 from utils import generate_signals_50pct
 from utils import simulate_atm_option_trades
+
 
 # ------------------------------------------------------
 # Backtest – BankNifty ATM Options (Intraday/Daily Toggle)
@@ -34,7 +36,7 @@ c1, c2, c3 = st.columns([2, 1, 1])
 with c1:
     symbol = st.text_input("Symbol", value=DEFAULT_SYMBOL)
 with c2:
-    prefer_period = st.selectbox("Preferred Period", ["5d", "14d", "30d"], index=0)
+    prefer_period = st.selectbox("Preferred Period", ["5d", "14d", "30d", "3mo"], index=0)
 with c3:
     prefer_interval = st.selectbox("Preferred Interval", ["5m", "15m", "30m", "60m", "1d"], index=0)
 
@@ -55,21 +57,22 @@ with c7:
 # =========================
 with st.spinner("Fetching market data..."):
     if data_mode.startswith("🔴"):
-        # Intraday preference; utils will try NSE 1st then fallback combos
-        df, used, msg = fetch_smart(...)
-if msg:
-    st.info(msg)
-if df.empty:
-    st.warning("⏳ No intraday data available right now.")
-    st.stop()
+        # Intraday preference; utils will try NSE 1st then yfinance, then fallbacks
+        df, used, msg = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+        if msg:
+            st.info(msg)
+        if df.empty:
+            st.warning("⏳ No intraday data available right now.")
+            st.stop()
     else:
         # Force Daily Safe mode (reliable on cloud/weekends)
-        df, used, msg = fetch_smart(...)
-if msg:
-    st.info(msg)
-if df.empty:
-    st.warning("⏳ No prices available right now. Please wait for market hours.")
-    st.stop()   # <-- stops cleanly (NO RED ERROR)
+        df, used, msg = fetch_smart(symbol, prefer=("3mo", "1d"))
+        if msg:
+            st.info(msg)
+        if df.empty:
+            st.warning("⏳ No prices available right now. Please wait for market hours.")
+            st.stop()
+
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
 
 if df is None or df.empty:
@@ -135,7 +138,7 @@ else:
     winrate = (wins / total) * 100.0 if total > 0 else 0.0
     pnl_total = float(tr["pnl_points"].sum())
 
-    # equity can be Series (returned) or build from trades
+    # equity can be Series (returned) or built from trades
     if equity is None or (isinstance(equity, pd.Series) and equity.empty):
         equity_series = tr["pnl_points"].cumsum()
     else:
@@ -178,17 +181,16 @@ perf_payload = {
     "init_sl": float(init_sl),
     "lot_size": int(lot),
     "theta": float(theta),
-    "trades": int(total),
-    "wins": int(wins),
-    "losses": int(losses),
-    "winrate": float(winrate),
-    "pnl_total": float(pnl_total),
-    "max_drawdown": float(max_dd),
-    "backtest_score": float(backtest_score),            # learning signal only
-    "equity_curve": _serialize_equity(locals().get("equity_series", pd.Series(dtype=float))),  # serialized curve
+    "trades": int(0 if tr is None else len(tr)),
+    "wins": int(0 if tr is None or tr.empty else (tr["pnl_points"] > 0).sum()),
+    "losses": int(0 if tr is None or tr.empty else (tr["pnl_points"] <= 0).sum()),
+    "winrate": float(0.0 if tr is None or tr.empty else (tr["pnl_points"] > 0).mean() * 100.0),
+    "pnl_total": float(0.0 if tr is None or tr.empty else tr["pnl_points"].sum()),
+    "max_drawdown": float(0.0 if 'equity_series' not in locals() else _max_drawdown(equity_series)),
+    "backtest_score": float(0.0 if tr is None or tr.empty else backtest_score),  # learning signal only
+    "equity_curve": _serialize_equity(locals().get("equity_series", pd.Series(dtype=float))),
 }
 
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["backtest"] = perf_payload
-
 st.success("✅ Backtest performance saved for AI Console learning (summary + equity curve).")
