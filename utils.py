@@ -13,6 +13,9 @@ import numpy as np
 import pandas as pd
 import requests
 import yfinance as yf  # used only as a backup
+# utils.py (top section me add)
+from supabase_client import get_client
+from datetime import datetime, timezone
 
 # =============================================================================
 # Defaults & weights (used by multiple pages)
@@ -447,3 +450,81 @@ def fib_confidence(df: pd.DataFrame, lookback: int = 200) -> Tuple[float, dict]:
     rng = max(1.0, (sh-sl)/6.0)
     score = max(0.0, 100.0 - (dist/rng)*100.0)
     return round(score,2), lv
+# ======================= Supabase Helpers =======================
+
+def sb_save_candles(df: pd.DataFrame, symbol: str, tf: str) -> int:
+    """
+    Upsert OHLCV candles into Supabase (candles_banknifty).
+    Returns rows inserted/updated count (best-effort).
+    """
+    if df is None or df.empty: 
+        return 0
+    sb = get_client()
+    # normalize
+    d = df.copy()
+    d = d.rename(columns=str.lower)[["open","high","low","close","volume"]].dropna()
+    d.index = pd.to_datetime(d.index, utc=True)  # store UTC
+    payload = []
+    for ts, row in d.iterrows():
+        payload.append({
+            "symbol": symbol,
+            "tf": tf,
+            "ts": ts.isoformat(),
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low":  float(row["low"]),
+            "close":float(row["close"]),
+            "volume": float(row["volume"]),
+        })
+    # upsert on primary key (symbol,tf,ts)
+    res = sb.table("candles_banknifty").upsert(payload, on_conflict="symbol,tf,ts").execute()
+    # Some supabase-py versions return dict-like; handle generally
+    try:
+        return len(res.data) if hasattr(res, "data") and res.data is not None else 0
+    except Exception:
+        return 0
+
+
+def sb_record_module_score(module: str, score: float, bias: str = None, symbol: str="^NSEBANK", tf: str=None, meta: dict=None):
+    """
+    Store a module score row for dashboard/AI.
+    """
+    sb = get_client()
+    row = {
+        "module": module,
+        "symbol": symbol,
+        "tf": tf,
+        "score": float(score),
+        "bias": bias,
+        "meta": meta or {},
+    }
+    sb.table("module_scores").insert(row).execute()
+
+
+def sb_save_paper_trades(trades_df: pd.DataFrame, symbol: str="^NSEBANK", lot_size: int=15, params: dict=None) -> int:
+    """
+    Bulk insert paper trades to Supabase.
+    """
+    if trades_df is None or trades_df.empty:
+        return 0
+    sb = get_client()
+    rows = []
+    for _, r in trades_df.iterrows():
+        rows.append({
+            "symbol": symbol,
+            "signal": str(r.get("signal","")),
+            "side": str(r.get("side","")),
+            "entry_time": pd.to_datetime(r["entry_time"], utc=True).isoformat(),
+            "exit_time":  pd.to_datetime(r["exit_time"],  utc=True).isoformat(),
+            "entry_px": float(r["entry_px"]),
+            "exit_px":  float(r["exit_px"]),
+            "pnl_pts":  float(r["pnl_pts"]),
+            "pnl_rupees": float(r.get("pnl_rupees", 0.0)),
+            "lot_size": int(r.get("lot_size", lot_size)),
+            "params": params or {},
+        })
+    res = sb.table("paper_trades").insert(rows).execute()
+    try:
+        return len(res.data) if hasattr(res, "data") and res.data is not None else 0
+    except Exception:
+        return 0
