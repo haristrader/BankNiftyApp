@@ -1,4 +1,8 @@
-# utils.py — FINAL (NSE-first + Weekend Safe Mode + Fast fetch + Trader message)
+# =============================================================================
+# BankNifty Algo Engine - utils.py (NSE + Weekend Safe + AI Ready)
+# Version: Master Build - Haris / ChatGPT
+# Last Updated: 2025-10-19
+# =============================================================================
 from __future__ import annotations
 
 import time
@@ -8,12 +12,13 @@ from typing import Tuple, Dict, List
 import numpy as np
 import pandas as pd
 import requests
-import yfinance as yf  # fallback only
+import yfinance as yf  # used only as a backup
 
 # =============================================================================
-# Defaults & Weights
+# Defaults & weights (used by multiple pages)
 # =============================================================================
 
+# BankNifty default symbol for yfinance; our NSE engine ignores the suffix internally.
 DEFAULT_SYMBOL = "NSEBANK.NS"
 
 WEIGHTS_DEFAULT: Dict[str, int] = {
@@ -25,23 +30,24 @@ WEIGHTS_DEFAULT: Dict[str, int] = {
     "others": 10,
 }
 
-# yfinance fallbacks
+# yfinance fallback combos (only if NSE API fails)
 INTERVAL_FALLBACKS: List[Tuple[str, str]] = [
     ("5d", "5m"), ("14d", "15m"), ("30d", "30m"), ("60d", "60m"),
     ("3mo", "1d"), ("2y", "1wk"),
 ]
 
 # =============================================================================
-# Market hours (IST) + Weekend Safe Mode
+# Market hours (IST) + weekend/holiday detection
 # =============================================================================
 
-def _ist_now():
-    # IST = UTC + 5:30
+def _ist_now() -> datetime:
+    """IST = UTC + 5:30"""
     return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
 
 def is_market_open() -> bool:
     """
     NSE regular session: Mon–Fri, 09:15–15:30 IST.
+    Used by Weekend Safe Mode to decide fallback behaviour.
     """
     now = _ist_now()
     if now.weekday() >= 5:  # 5=Sat, 6=Sun
@@ -51,9 +57,10 @@ def is_market_open() -> bool:
     return start <= now <= end
 
 # =============================================================================
-# NSE (TradingView-like) engine
+# NSE (TradingView-like) engine — primary data source
 # =============================================================================
 
+# Headers that reliably work on Streamlit Cloud as well.
 _TV_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -66,12 +73,17 @@ _TV_HEADERS = {
 }
 
 def _to_nse_index_name(symbol: str) -> str:
+    """
+    Normalize any BankNifty-like input to the NSE index label expected by the API.
+    App is BN-only by design.
+    """
     s = (symbol or "").upper().strip()
     if s in {"^NSEBANK", "NSEBANK", "NSEBANK.NS", "BANKNIFTY", "BANKNIFTY.NS"}:
         return "NIFTY BANK"
-    return "NIFTY BANK"  # app is BN-only by design
+    return "NIFTY BANK"
 
 def _interval_to_nse(interval: str) -> str:
+    """Map our intervals to NSE endpoint query values."""
     m = {
         "1m": "1minute", "2m": "2minute", "5m": "5minute", "10m": "10minute",
         "15m": "15minute", "30m": "30minute", "60m": "60minute", "1h": "60minute",
@@ -80,31 +92,36 @@ def _interval_to_nse(interval: str) -> str:
     return m.get(interval, "5minute")
 
 def _period_days(period: str) -> int:
+    """Approximate days for simple from/to epoch windows."""
     m = {"5d":5, "7d":7, "10d":10, "14d":14, "30d":30, "60d":60, "3mo":90, "6mo":180, "1y":365, "2y":730}
     return m.get(period, 14)
 
 def fetch_nse_index(symbol: str, period: str, interval: str) -> pd.DataFrame:
     """
-    Try NSE chart endpoints for OHLCV. Return cleaned DF or empty.
+    Try NSE chart endpoints for OHLCV. Return cleaned DF or empty on failure.
+    This is our PRIMARY source for BankNifty data.
     """
     try:
         idx = _to_nse_index_name(symbol)
         iv  = _interval_to_nse(interval)
         days = _period_days(period)
-        to_ts = int(time.time())
-        frm_ts = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+
+        to_ts  = int(time.time())
+        from_ts = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
 
         base = "https://www.nseindia.com"
         candles_url = (
-            f"{base}/api/candles/index?index={requests.utils.quote(idx)}&from={frm_ts}&to={to_ts}&interval={iv}"
+            f"{base}/api/candles/index?index={requests.utils.quote(idx)}&from={from_ts}&to={to_ts}&interval={iv}"
         )
         chart_url = (
-            f"{base}/api/chart-databyindex?index={requests.utils.quote(idx)}&indices=true&from={frm_ts}&to={to_ts}"
+            f"{base}/api/chart-databyindex?index={requests.utils.quote(idx)}&indices=true&from={from_ts}&to={to_ts}"
         )
 
         sess = requests.Session()
-        sess.get(base, headers=_TV_HEADERS, timeout=10)  # bootstrap cookies
+        # Bootstrap cookies for the domain
+        sess.get(base, headers=_TV_HEADERS, timeout=10)
 
+        # Preferred: candles endpoint (returns OHLCV directly)
         r = sess.get(candles_url, headers=_TV_HEADERS, timeout=15)
         if r.status_code == 200:
             data = r.json()
@@ -115,6 +132,7 @@ def fetch_nse_index(symbol: str, period: str, interval: str) -> pd.DataFrame:
                 df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
                 return sanitize_ohlcv(df)
 
+        # Fallback: chart-databyindex (sometimes has candles or grapthData)
         r2 = sess.get(chart_url, headers=_TV_HEADERS, timeout=15)
         if r2.status_code == 200:
             data2 = r2.json()
@@ -126,28 +144,33 @@ def fetch_nse_index(symbol: str, period: str, interval: str) -> pd.DataFrame:
                     df = df.dropna(subset=["Date"]).set_index("Date").sort_index()
                     return sanitize_ohlcv(df)
                 if isinstance(data2.get("grapthData"), list) and data2["grapthData"]:
+                    # grapthData: [ts_ms, close] → synthesize minimal OHLC
                     rows = data2["grapthData"]
                     tmp = pd.DataFrame(rows, columns=["ts", "close"])
                     tmp["Date"] = pd.to_datetime(tmp["ts"], unit="ms", utc=True).dt.tz_convert(None)
                     tmp["close"] = pd.to_numeric(tmp["close"], errors="coerce")
                     tmp = tmp.dropna(subset=["Date","close"]).set_index("Date").sort_index()
-                    tmp["open"] = tmp["close"].shift(1).fillna(tmp["close"])
-                    tmp["high"] = tmp[["open","close"]].max(axis=1)
-                    tmp["low"]  = tmp[["open","close"]].min(axis=1)
+                    tmp["open"]  = tmp["close"].shift(1).fillna(tmp["close"])
+                    tmp["high"]  = tmp[["open","close"]].max(axis=1)
+                    tmp["low"]   = tmp[["open","close"]].min(axis=1)
                     tmp["volume"] = 0.0
                     return sanitize_ohlcv(tmp[["open","high","low","close","volume"]])
     except Exception:
+        # We swallow here; higher-level fetchers will try backup routes.
         pass
+
     return pd.DataFrame()
 
 # =============================================================================
-# yfinance backup
+# yfinance backup (used only if NSE engine fails)
 # =============================================================================
 
 def fetch_yf(symbol: str, period: str, interval: str, auto_adjust: bool = True) -> pd.DataFrame:
     try:
-        df = yf.download(symbol, period=period, interval=interval,
-                         progress=False, auto_adjust=auto_adjust, group_by="column")
+        df = yf.download(
+            symbol, period=period, interval=interval,
+            progress=False, auto_adjust=auto_adjust, group_by="column"
+        )
     except Exception:
         return pd.DataFrame()
 
@@ -174,24 +197,66 @@ def fetch_yf(symbol: str, period: str, interval: str, auto_adjust: bool = True) 
     return sanitize_ohlcv(df)
 
 # =============================================================================
-# Public fetch APIs
+# Sanitizer (robust OHLCV + DateTimeIndex)
+# =============================================================================
+
+def sanitize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+
+    # flatten multindex columns if any
+    if isinstance(out.columns, pd.MultiIndex):
+        out.columns = [str(c[-1]) if isinstance(c, tuple) else str(c) for c in out.columns]
+
+    # drop duplicate columns safely
+    if out.columns.duplicated().any():
+        out = out.loc[:, ~out.columns.duplicated()]
+
+    cleaned = pd.DataFrame(index=out.index)
+    for col in ["open","high","low","close","volume"]:
+        if col in out.columns:
+            s = out[col]
+            if isinstance(s, pd.DataFrame):
+                s = s.iloc[:, 0]
+            cleaned[col] = pd.to_numeric(s, errors="coerce")
+
+    cleaned = cleaned.dropna(subset=["open","high","low","close","volume"])
+
+    if not isinstance(cleaned.index, pd.DatetimeIndex):
+        cleaned.index = pd.to_datetime(cleaned.index, errors="coerce")
+        cleaned = cleaned.dropna().sort_index()
+    else:
+        try:
+            cleaned.index = cleaned.index.tz_convert(None)
+        except Exception:
+            pass
+
+    cleaned.index.name = "Date"
+    return cleaned
+
+# =============================================================================
+# Public fetch APIs used across pages
 # =============================================================================
 
 def fetch(symbol: str = DEFAULT_SYMBOL, period: str = "14d", interval: str = "5m",
           auto_adjust: bool = True) -> pd.DataFrame:
     """
-    Simple fetch (no message). NSE first → yfinance → fallbacks.
+    Simple fetch (no message). NSE first → yfinance → yfinance fallbacks.
     """
     df = fetch_nse_index(symbol, period, interval)
     if not df.empty:
         return df
+
     df = fetch_yf(symbol, period, interval, auto_adjust)
     if not df.empty:
         return df
+
     for per, iv in INTERVAL_FALLBACKS:
         df = fetch_yf(symbol, per, iv, auto_adjust)
         if not df.empty:
             return df
+
     return pd.DataFrame()
 
 def fetch_smart(symbol: str = DEFAULT_SYMBOL,
@@ -200,23 +265,24 @@ def fetch_smart(symbol: str = DEFAULT_SYMBOL,
                 allow_symbol_fallback: bool = False
                ) -> Tuple[pd.DataFrame, Tuple[str,str], str]:
     """
-    Smart fetch with Weekend Safe Mode + Trader message.
+    Smart fetch with Weekend Safe Mode + trader message.
     RETURNS: (df, (period, interval), message)
-      - message: "" (market open / normal) OR "📅 Market Closed — Using Last Session Data"
+      message:
+        "" → market open / normal path
+        "📅 Market Closed — Using Last Session Data" → using last daily data
+        "⚠️ Market data unavailable. Please try again later." → complete failure
     """
-    msg = ""
-    # If market closed → force daily safe request first
+    # --- Weekend Safe Mode (W1: last daily close) ---
     if not is_market_open():
         # Try NSE daily first; then yfinance daily
         df = fetch_nse_index(symbol, "3mo", "1d")
         if df.empty:
             df = fetch_yf(symbol, "3mo", "1d", auto_adjust)
         if not df.empty:
-            msg = "📅 Market Closed — Using Last Session Data"
-            return df, ("3mo","1d"), msg
-        # continue to standard path if even daily failed
+            return df, ("3mo","1d"), "📅 Market Closed — Using Last Session Data"
+        # If even daily failed, continue to normal path (rare).
 
-    # Market open (or daily failed): try prefer → NSE first, then yfinance, then fallbacks
+    # Build preferred attempts (first user-preferred, then fallbacks)
     tries: List[Tuple[str,str]] = []
     if prefer and isinstance(prefer, tuple) and len(prefer)==2:
         tries.append(prefer)
@@ -224,57 +290,38 @@ def fetch_smart(symbol: str = DEFAULT_SYMBOL,
         if t not in tries:
             tries.append(t)
 
+    # NSE first, then yfinance for each attempt
     for per, iv in tries:
         df = fetch_nse_index(symbol, per, iv)
         if not df.empty:
-            return df, (per, iv), msg
+            return df, (per, iv), ""
         df = fetch_yf(symbol, per, iv, auto_adjust)
         if not df.empty:
-            return df, (per, iv), msg
+            return df, (per, iv), ""
 
-    # Optional symbol fallback (kept false by default)
+    # Optional symbol fallback (kept False per your preference)
     if allow_symbol_fallback:
         alt = "NSEBANK.NS"
         for per, iv in [("3mo","1d"), ("2y","1wk")]:
             df = fetch_nse_index(alt, per, iv)
-            if not df.empty: return df, (per,iv), msg
+            if not df.empty: return df, (per,iv), ""
             df = fetch_yf(alt, per, iv, auto_adjust)
-            if not df.empty: return df, (per,iv), msg
+            if not df.empty: return df, (per,iv), ""
 
-    # Nothing worked
+    # Complete failure (very rare): return message for UI
     first = tries[0] if tries else ("5d","5m")
-    return pd.DataFrame(), first, msg
+    return pd.DataFrame(), first, "⚠️ Market data unavailable. Please try again later."
 
 # =============================================================================
-# Cleaning & Strategy helpers
+# Strategy helpers (Signals + ATM Option Sim + Fibonacci)
 # =============================================================================
-
-def sanitize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    out = df.copy()
-    if isinstance(out.columns, pd.MultiIndex):
-        out.columns = [str(c[-1]) if isinstance(c, tuple) else str(c) for c in out.columns]
-    if out.columns.duplicated().any():
-        out = out.loc[:, ~out.columns.duplicated()]
-    cleaned = pd.DataFrame(index=out.index)
-    for col in ["open","high","low","close","volume"]:
-        if col in out.columns:
-            s = out[col]
-            if isinstance(s, pd.DataFrame):
-                s = s.iloc[:,0]
-            cleaned[col] = pd.to_numeric(s, errors="coerce")
-    cleaned = cleaned.dropna(subset=["open","high","low","close","volume"])
-    if not isinstance(cleaned.index, pd.DatetimeIndex):
-        cleaned.index = pd.to_datetime(cleaned.index, errors="coerce")
-        cleaned = cleaned.dropna().sort_index()
-    else:
-        try: cleaned.index = cleaned.index.tz_convert(None)
-        except Exception: pass
-    cleaned.index.name = "Date"
-    return cleaned
 
 def generate_signals_50pct(df: pd.DataFrame, mid_factor: float = 0.5) -> pd.DataFrame:
+    """
+    Your entry rule on any TF:
+    - BUY  if current low >= 50% of prev candle & close > prev high
+    - SELL if current high <= 50% of prev candle & close < prev low
+    """
     if df is None or df.empty:
         return pd.DataFrame()
     out = df.copy()
@@ -297,10 +344,18 @@ def simulate_atm_option_trades(
     signals_col: str = "signal",
     init_sl_pts: float = 10.0,
     lot_size: int = 15,
-    mode: str = "delta",            # "delta" or "index"
+    mode: str = "delta",            # "delta" (CE/PE ATM) or "index" (close-to-close proxy)
     delta_atm: float = 0.5,
     theta_per_candle: float = 0.0,
 ):
+    """
+    Minimal ATM CE/PE simulator with your trailing SL ladder:
+      • +10 → SL to entry
+      • +20 → SL to entry +10
+      • +30 → SL to entry +15
+      • +50 → keep ~50% profit (trailing)
+    Returns: trades_df, equity_series, score (0–100 from winrate)
+    """
     if df is None or df.empty or signals_col not in df.columns:
         return pd.DataFrame(), pd.Series(dtype=float), 50.0
 
@@ -309,7 +364,7 @@ def simulate_atm_option_trades(
 
     pos=None; entry_p=None; sl=None
     trades=[]; prem=0.0
-    base_mult = 0.01  # ~1% of index as baseline premium
+    base_mult = 0.01  # baseline premium ~1% of index (simple proxy)
 
     for i in range(len(df)-1):
         sig = str(df[signals_col].iloc[i])
@@ -317,6 +372,7 @@ def simulate_atm_option_trades(
         du = u_next - u_now
         t_next = times[i+1]
 
+        # Option price delta step; or raw index step
         dp = (delta_atm * du - theta_per_candle) if mode == "delta" else du
 
         if pos is None:
@@ -327,7 +383,7 @@ def simulate_atm_option_trades(
             continue
 
         if pos == "CE":
-            prem = prem + max(-prem, dp)
+            prem = prem + max(-prem, dp)          # premium can't go below 0
             profit = prem - entry_p
             if profit >= 10 and sl < entry_p: sl = entry_p
             if profit >= 20 and sl < entry_p + 10: sl = entry_p + 10
@@ -365,6 +421,7 @@ def simulate_atm_option_trades(
     return tr, tr["cum_pnl"], score
 
 # ---- Fibonacci helpers ----
+
 def swing(df: pd.DataFrame, lookback: int = 200):
     recent = df.tail(max(lookback, 2))
     sh = float(recent["high"].max()); sl = float(recent["low"].min())
