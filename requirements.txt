@@ -6,3 +6,8 @@ ta
 matplotlib
 mplfinance
 requests
+supabase
+postgrest
+gotrue
+storage3
+httpx
