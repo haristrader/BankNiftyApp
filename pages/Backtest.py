@@ -59,10 +59,12 @@ with st.spinner("Fetching market data..."):
         df, used = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
     else:
         # Force Daily Safe mode (reliable on cloud/weekends)
-        df, used, msg = fetch_smart(symbol, prefer=("3mo", "1d"))
+        df, used, msg = fetch_smart(...)
 if msg:
-    st.info(msg)  # 📅 Market Closed — Using Last Session Data or ⚠️ warning
-
+    st.info(msg)
+if df.empty:
+    st.warning("⏳ No prices available right now. Please wait for market hours.")
+    st.stop()   # <-- stops cleanly (NO RED ERROR)
 st.caption(f"Using: period={used[0]}  interval={used[1]}")
 
 if df is None or df.empty:
