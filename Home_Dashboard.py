@@ -1,172 +1,167 @@
-# Home_Dashboard.py — Final Decision Engine (BUY/SELL/HOLD with trader language)
+# Home_Dashboard.py
+# ----------------------------------------------------------
+# Master Dashboard – BankNifty Algo Terminal (Fusion Engine)
+# Merges module scores (Trend / Fibonacci / SmartMoney / BankImpact)
+# into a single 0–100 final score + BUY/SELL/HOLD bias.
+# Saves decision for AI Console via st.session_state["final_decision"].
+# Weekend-safe: handles missing modules & prompts user to open pages.
+# ----------------------------------------------------------
 import streamlit as st
 import pandas as pd
+from datetime import datetime
 
-# pull defaults for weights/symbol if present
-try:
-    from utils import WEIGHTS_DEFAULT, DEFAULT_SYMBOL
-except Exception:
-    WEIGHTS_DEFAULT = {
-        "trend": 20, "fibonacci": 25, "priceaction": 15,
-        "smartmoney": 20, "backtest": 10, "others": 10
-    }
-    DEFAULT_SYMBOL = "^NSEBANK"
+st.set_page_config(
+    page_title="Master Dashboard — BankNifty Algo",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-st.set_page_config(page_title="BankNifty Terminal — Dashboard", layout="wide", initial_sidebar_state="expanded")
 st.title("🏠 Master Dashboard — BankNifty Algo Terminal")
+st.caption("Tip: Trend, Fibonacci, SmartMoney, Bank Impact pages ko left sidebar se ek baar open kar lo — unke scores yahan populate ho jayenge.")
 
-# ---------- session bootstrap ----------
-scores = st.session_state.get("scores", {})
-st.session_state["scores"] = scores  # ensure it exists
+# ----------------------- Helpers -----------------------
+def _get_perf():
+    return st.session_state.get("performance", {})
 
-if "weights" not in st.session_state:
-    st.session_state["weights"] = WEIGHTS_DEFAULT.copy()
-weights = st.session_state["weights"]
+def _get_score(perf: dict, key: str):
+    """returns (score, bias, meta-dict, available:bool)"""
+    obj = perf.get(key, {})
+    sc  = obj.get("final_score", None)
+    bias = obj.get("bias", None) or obj.get("trend", None) or obj.get("fib_bias", None)
+    # small meta for badges
+    meta = {
+        "symbol": obj.get("symbol"),
+        "tf": obj.get("tf"),
+        "mode": obj.get("mode") or ("daily" if obj.get("used", ["","1d"])[-1] == "1d" else "intraday"),
+        "used": obj.get("used"),
+    }
+    ok = (sc is not None)
+    return sc, bias, meta, ok
 
-with st.sidebar:
-    st.header("⚖️ Module Weights (impact on Final Score)")
-    colA, colB = st.columns(2)
-    with colA:
-        weights["trend"]       = st.slider("Trend",        0, 100, weights["trend"])
-        weights["fibonacci"]   = st.slider("Fibonacci",    0, 100, weights["fibonacci"])
-        weights["priceaction"] = st.slider("Price Action", 0, 100, weights["priceaction"])
-    with colB:
-        weights["smartmoney"]  = st.slider("Smart Money",  0, 100, weights["smartmoney"])
-        weights["backtest"]    = st.slider("Backtest",     0, 100, weights["backtest"])
-        weights["others"]      = st.slider("Others",       0, 100, weights["others"])
+def _badge(meta):
+    if not meta: 
+        return ""
+    mode = str(meta.get("mode") or "").lower()
+    if mode == "intraday":
+        return "🔴 Live"
+    elif mode == "daily":
+        return "🟦 Daily"
+    return ""
 
-st.caption("Tip: Open each page in the left sidebar once (Trend/Fibonacci/SmartMoney/PriceAction/Backtest) so scores populate here.")
+def _box(title, score, bias, meta, color="gray"):
+    with st.container(border=True):
+        cols = st.columns([3,1])
+        with cols[0]:
+            st.subheader(title)
+            st.caption(f"{meta.get('symbol','')} • TF: {meta.get('tf','-')} • {_badge(meta)}")
+        with cols[1]:
+            if score is not None:
+                st.metric("Score (0–100)", f"{score:.0f}")
+            else:
+                st.metric("Score (0–100)", "—")
+        # bias line
+        if bias:
+            if str(bias).upper() == "BUY":
+                st.success(f"Bias: {bias}")
+            elif str(bias).upper() == "SELL":
+                st.error(f"Bias: {bias}")
+            else:
+                st.info(f"Bias: {bias}")
+        else:
+            st.info("Bias: —")
 
-# ---------- helper to compute final ----------
-def compute_final(_scores: dict, _weights: dict) -> tuple[float, pd.DataFrame]:
-    rows = []
-    num, den = 0.0, 0.0
-    for key in ["trend","fibonacci","priceaction","smartmoney","backtest"]:
-        sc = _scores.get(key, None)
-        w  = float(_weights.get(key, 0)) / 100.0
-        contrib = (sc * w) if sc is not None else None
-        if sc is not None:
-            num += (sc * w)
-            den += w
-        rows.append({"Module": key.capitalize(), "Score": sc, "Weight%": _weights.get(key, 0), "Weighted": contrib})
-    # include 'Others' bucket only for display (not a module score)
-    rows.append({"Module": "Others", "Score": None, "Weight%": _weights.get("others", 0), "Weighted": None})
+# ----------------------- Sidebar Weights -----------------------
+st.sidebar.header("⚖️ Module Weights (for Final Score)")
+w_trend      = st.sidebar.slider("Trend", 0, 40, 20)
+w_fib        = st.sidebar.slider("Fibonacci", 0, 40, 25)
+w_sm         = st.sidebar.slider("Smart Money", 0, 40, 20)
+w_bankimpact = st.sidebar.slider("Bank Impact", 0, 30, 10)
+w_others     = st.sidebar.slider("Others (buffer)", 0, 30, 10)
 
-    final = round(num / den, 2) if den > 0 else 0.0
-    df = pd.DataFrame(rows)
-    return final, df
+st.sidebar.caption("Note: Price Action entry/exit execution module ka score nahi hota — woh final bias ke baad trigger hota hai.")
 
-final_score, table = compute_final(scores, weights)
+# ----------------------- Pull module scores -----------------------
+perf = _get_perf()
 
-# ---------- headline cards ----------
-cards = st.columns(5)
-labels = [("Trend","trend"), ("Fibonacci","fibonacci"),
-          ("Price Action","priceaction"), ("Smart Money","smartmoney"),
-          ("Backtest","backtest")]
-for (label, key), c in zip(labels, cards):
-    v = scores.get(key)
-    c.metric(label, f"{v:.0f}/100" if isinstance(v,(int,float)) else "—")
+sc_trend, b_trend, m_trend, ok_trend = _get_score(perf, "trend")
+sc_fib,   b_fib,   m_fib,   ok_fib   = _get_score(perf, "fibonacci")
+sc_sm,    b_sm,    m_sm,    ok_sm    = _get_score(perf, "smartmoney")
+sc_bank,  b_bank,  m_bank,  ok_bank  = _get_score(perf, "bankimpact")
 
+# ----------------------- Header Cards -----------------------
+st.markdown("### Module Snapshots")
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    _box("Trend", sc_trend, b_trend, m_trend)
+with c2:
+    _box("Fibonacci", sc_fib, b_fib, m_fib)
+with c3:
+    _box("Smart Money", sc_sm, b_sm, m_sm)
+with c4:
+    _box("Bank Impact", sc_bank, b_bank, m_bank)
+
+# ----------------------- Final Score Fusion -----------------------
 st.markdown("---")
+st.subheader("🎯 Final Decision")
 
-# ---------- decision engine with trader language ----------
-def build_rationale(sc: dict) -> list[str]:
-    R = []
-    t  = sc.get("trend")
-    f  = sc.get("fibonacci")
-    pa = sc.get("priceaction")
-    sm = sc.get("smartmoney")
-    bt = sc.get("backtest")
+# collect available scores + weights
+items = []
+if ok_trend and w_trend > 0:
+    items.append(("Trend", sc_trend, w_trend))
+if ok_fib and w_fib > 0:
+    items.append(("Fibonacci", sc_fib, w_fib))
+if ok_sm and w_sm > 0:
+    items.append(("Smart Money", sc_sm, w_sm))
+if ok_bank and w_bankimpact > 0:
+    items.append(("Bank Impact", sc_bank, w_bankimpact))
 
-    if t is not None:
-        if t >= 70:   R.append("Trend strong — bulls controlling structure.")
-        elif t <= 30: R.append("Trend weak — bears dominant / momentum soft.")
-        else:         R.append("Trend mixed — sideways/rotation possible.")
+if not items:
+    st.warning("Abhi tak kisi module ka score available nahi. 👉 Trend / Fibonacci / Smart Money / Bank Impact pages ko ek baar open/run kar lo.")
+    st.stop()
 
-    if f is not None:
-        if f >= 65:   R.append("Fib confluence supportive — 38.2–61.8 zone respected.")
-        elif f <= 35: R.append("Fib alignment weak — key retracement not holding.")
-        else:         R.append("Fib neutral — no strong cluster visible.")
+# compute weighted score
+num = sum(s * w for _, s, w in items)
+den = sum(w for _, _, w in items)
+final_score = num / den if den > 0 else 0.0
+final_score = max(0.0, min(100.0, final_score))
 
-    if pa is not None:
-        if pa >= 70:  R.append("Price Action breakout valid (50% rule bias up).")
-        elif pa <= 30:R.append("Price Action breakdown risk (50% rule bias down).")
-        else:         R.append("Price Action neutral — wait for candle confirmation.")
-
-    if sm is not None:
-        if sm >= 65:  R.append("Smart Money accumulation signs — clean breaks, healthy volume.")
-        elif sm <= 35:R.append("Distribution / fakeout risk — wick/volume mismatch.")
-        else:         R.append("Smart Money neutral — no clear footprint.")
-
-    if bt is not None:
-        if bt >= 55:  R.append("Backtest regime supportive — recent win-rate acceptable.")
-        elif bt <= 45:R.append("Backtest regime weak — keep risk tight.")
-        else:         R.append("Backtest neutral — average edge.")
-
-    return R
-
-def decision_text(score: float) -> tuple[str, str]:
-    if score >= 70:
-        return ("BUY", "Market in **Bullish Control** — buying dips / breakout setups preferred.")
-    elif score <= 30:
-        return ("SELL", "Market in **Bearish Control** — sell rallies / breakdown setups favored.")
-    else:
-        return ("HOLD", "Neutral zone — let price confirm; protect capital and wait for alignment.")
-
-# ---------- Decision Engine ----------
-def decision_text(score: float):
-    if score >= 70:
-        return ("BUY", "Market in **Bullish Control** — dips may be buying opportunities.")
-    elif score <= 30:
-        return ("SELL", "Market in **Bearish Control** — rallies may face selling pressure.")
-    else:
-        return ("HOLD", "Neutral zone — wait for clearer confirmation before entering.")
-
-# Get label and message
-label, msg = decision_text(final_score)
-
-st.markdown("### 🎯 Final Decision")
-col_dec, col_gauge = st.columns([1, 3])
-
-with col_dec:
-    if label == "BUY":
-        st.markdown(f"<h3 style='color:green;'>🟢 {label}</h3>", unsafe_allow_html=True)
-    elif label == "SELL":
-        st.markdown(f"<h3 style='color:red;'>🔴 {label}</h3>", unsafe_allow_html=True)
-    else:
-        st.markdown(f"<h3 style='color:orange;'>🟡 {label}</h3>", unsafe_allow_html=True)
-
-with col_gauge:
-    st.progress(int(final_score))
-    st.write(f"**Final Score: {final_score}/100**")
-
-st.write(msg)
-
-# rationale bullets
-with st.expander("📌 Why this decision? (Rationale)"):
-    reasons = build_rationale(scores)
-    if reasons:
-        st.markdown("\n".join([f"- {r}" for r in reasons]))
-    else:
-        st.info("Open analysis pages to generate module scores first.")
-
-# weighted table
-st.markdown("### 📊 Module Weights & Contributions")
-show = table.copy()
-# pretty names
-show["Module"] = show["Module"].str.replace("Priceaction","Price Action").str.replace("Smartmoney","Smart Money")
-st.dataframe(show, use_container_width=True)
-
-# next steps box
-st.markdown("### 🧭 What to do now")
-if label == "BUY":
-    st.write("- Focus on **long setups** near EMA20 pullbacks or Fib 50–61.8 retrace.")
-    st.write("- Use your trailing SL ladder: 10→BE, 20→+10, 30→+15, 50→trail 50% profit.")
-elif label == "SELL":
-    st.write("- Focus on **short setups** on lower-highs / breakdown retests.")
-    st.write("- Keep risk tight; avoid fighting strong spikes; trail per ladder.")
+# final bias thresholds
+if final_score >= 65:
+    final_bias = "BUY"
+elif final_score <= 35:
+    final_bias = "SELL"
 else:
-    st.write("- **Avoid fresh risk** until Trend + Price Action align.")
-    st.write("- Watch Smart Money / wick+volume for fakeout filters.")
+    final_bias = "HOLD"
 
-st.caption(f"Symbol: {DEFAULT_SYMBOL}  •  Scores update when you visit pages on the left.  •  Adjust weights to fit your style.")
+# linear gauge
+st.progress(int(final_score))
+st.write(f"**Final Score:** `{final_score:.1f} / 100`  |  **Bias:** `{final_bias}`")
+
+# Trader-style guidance
+if final_bias == "BUY":
+    st.success("Plan: BUY-side only. Price Action (5m 50–60% mid-zone) se entries lo. SL trail: 10→BE, 20→+10, 30→+15, 50→lock 50%.")
+elif final_bias == "SELL":
+    st.error("Plan: SELL-side only. Price Action (5m 50–60% mid-zone) se short entries lo. SL trail rules apply.")
+else:
+    st.info("Plan: HOLD/Skip until clarity. Sirf high-confidence Price Action signal par small risk lena.")
+
+# breakdown table
+with st.expander("Weight Breakdown"):
+    df = pd.DataFrame([{"Module": n, "Score": s, "Weight": w, "Weighted": s*w} for n, s, w in items])
+    df["Score"] = df["Score"].round(1)
+    df["Weighted"] = df["Weighted"].round(1)
+    st.dataframe(df, use_container_width=True)
+
+# ----------------------- Save decision for AI Console -----------------------
+st.session_state["final_decision"] = {
+    "timestamp": datetime.now().isoformat(timespec="seconds"),
+    "final_score": float(final_score),
+    "final_bias": final_bias,
+    "weights": {
+        "trend": w_trend, "fibonacci": w_fib, "smartmoney": w_sm,
+        "bankimpact": w_bankimpact, "others": w_others
+    },
+    "available": [n for n, _, _ in items],
+}
+st.caption("✅ Final decision saved. AI Console is now aware.")
