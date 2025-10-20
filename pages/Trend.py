@@ -1,155 +1,132 @@
 # pages/Trend.py
 # -------------------------------------------------------------
-# Trend Analysis (Multi-TF) — BankNifty
-# • Weekend-safe: uses last daily data when market is closed.
-# • Pro view: Candles + Volume + EMA20/EMA50 + RSI.
-# • Score (0–100): EMA/RSI blend per timeframe + optional multi-TF.
+# Trend Strength (Multi-TF EMA & RSI)
+# • Uses utils.fetch() to get OHLCV
+# • Computes strength score 0–100 + BUY/SELL/NEUTRAL bias
+# • SMART MODE Supabase save:
+#     - silently saves current TF candles
+#     - also saves Daily(1D) candles for AI/history
+# • Stores to session_state["performance"]["trend"]
+# • Logs module score to Supabase (module_scores)
 # -------------------------------------------------------------
 import streamlit as st
 import pandas as pd
 import numpy as np
-import ta  # pip install ta
-import mplfinance as mpf
-import matplotlib.pyplot as plt
+import ta
 
-from utils import DEFAULT_SYMBOL, fetch_smart
+from utils import (
+    fetch, DEFAULT_SYMBOL,          # your existing helpers
+    sb_save_candles, sb_record_module_score  # Supabase helpers
+)
 
-st.set_page_config(page_title="Trend", layout="wide", initial_sidebar_state="expanded")
-st.title("📈 Trend Analysis — BankNifty")
+st.set_page_config(page_title="Trend Strength", layout="wide", initial_sidebar_state="expanded")
+st.title("📈 Trend Strength (EMA & RSI)")
 
-# -------------------- Controls --------------------
-left, mid, right = st.columns([1.6, 1.1, 1.1])
-with left:
-    symbol = st.text_input("Symbol", value=DEFAULT_SYMBOL)
-with mid:
-    # Timeframe choice drives period/interval suggestion
-    tf = st.selectbox(
-        "Timeframe",
-        options=["Daily (1D)", "1H", "15m", "5m"],
-        index=0,
-        help="Select the timeframe to analyze.",
-    )
-with right:
-    data_mode = st.radio(
-        "Data Mode",
-        options=["🔴 Live Intraday", "🟦 Offline / Daily (Safe)"],
-        index=1 if "Daily" in tf else 0,
-        horizontal=True,
-    )
+# ---------------- Sidebar Controls ----------------
+symbol   = st.sidebar.text_input("Symbol", value=DEFAULT_SYMBOL)  # "^NSEBANK" from utils
+period   = st.sidebar.selectbox("Period", ["2d","5d","7d","14d","1mo","3mo","6mo"], index=2)
+interval = st.sidebar.selectbox("Interval (TF)", ["5m","15m","60m","1d"], index=1)
 
-# Map timeframe → (period, interval) preferences
-TF_PREF = {
-    "Daily (1D)": ("3mo", "1d"),
-    "1H": ("60d", "60m"),
-    "15m": ("14d", "15m"),
-    "5m": ("5d", "5m"),
-}
-prefer = TF_PREF.get(tf, ("3mo", "1d"))
+st.sidebar.markdown("---")
+st.sidebar.caption("Tip: Market बंद हो तो 1d चुनें (safe). Intraday TFs live hours में best हैं.")
 
-# If user picked Daily Safe OR weekend: fetch_smart will message accordingly.
-with st.spinner("Fetching price data…"):
-    df, used, msg = fetch_smart(
-        symbol,
-        prefer=("3mo", "1d") if data_mode.startswith("🟦") or "Daily" in tf else prefer
-    )
-if msg:
-    st.info(msg)
-if df is None or df.empty:
-    st.warning("No data available for this selection right now.")
+# ---------------- Fetch Data ----------------
+with st.spinner("Fetching OHLCV…"):
+    df = fetch(symbol, period=period, interval=interval, auto_adjust=True)
+
+if df is None or df.empty or len(df) < 30:
+    st.error("No/insufficient data. Try different Period/Interval or market hours.")
     st.stop()
 
-st.caption(f"Using data: period={used[0]} • interval={used[1]}")
-
-# -------------------- Indicators & Score --------------------
-def add_indicators(frame: pd.DataFrame) -> pd.DataFrame:
-    out = frame.copy()
-    out["ema20"] = ta.trend.EMAIndicator(out["close"], window=20).ema_indicator()
-    out["ema50"] = ta.trend.EMAIndicator(out["close"], window=50).ema_indicator()
-    out["rsi"] = ta.momentum.RSIIndicator(out["close"], window=14).rsi()
-    return out.dropna()
-
-def trend_score(row: pd.Series) -> int:
-    score = 0
-    # Structure & momentum mix
-    score += 2 if row["close"] > row["ema20"] else -2
-    score += 3 if row["close"] > row["ema50"] else -3
-    if row["rsi"] >= 60:
-        score += 3
-    elif row["rsi"] <= 40:
-        score -= 3
-    # Clamp roughly to [-8, +8] → normalize 0..100
-    return score
-
-idf = add_indicators(df)
+# -------------- INDICATORS & SCORE --------------
+idf = df.copy()
+idf["ema20"] = ta.trend.EMAIndicator(idf["close"], 20).ema_indicator()
+idf["ema50"] = ta.trend.EMAIndicator(idf["close"], 50).ema_indicator()
+idf["rsi"]   = ta.momentum.RSIIndicator(idf["close"], 14).rsi()
+idf = idf.dropna()
 if idf.empty:
-    st.warning("Not enough candles for indicators. Try a longer period.")
+    st.error("Not enough candles after indicators. Try longer period.")
     st.stop()
 
-latest = idf.iloc[-1]
-raw = trend_score(latest)
-normalized = int(np.clip(((raw + 8) / 16) * 100, 0, 100))
+last = idf.iloc[-1]
+score_raw = 0
+# close vs EMA20/EMA50
+score_raw += 2 if last["close"] > last["ema20"] else -2
+score_raw += 3 if last["close"] > last["ema50"] else -3
+# RSI zones
+if last["rsi"] > 60:
+    score_raw += 3
+elif last["rsi"] < 40:
+    score_raw -= 3
 
-colA, colB, colC, colD = st.columns(4)
-colA.metric("Close", f"{latest['close']:.2f}")
-colB.metric("EMA20 / EMA50", f"{latest['ema20']:.1f} / {latest['ema50']:.1f}")
-colC.metric("RSI (14)", f"{latest['rsi']:.1f}")
-bias = "Bullish" if normalized >= 60 else ("Bearish" if normalized <= 40 else "Neutral")
-colD.metric("Trend Bias", f"{bias} ({normalized}/100)")
+# normalize ~ (-8..+8) → (0..100)
+normalized = ((score_raw + 8.0) / 16.0) * 100.0
+trend_score = float(max(0.0, min(100.0, normalized)))
 
-st.progress(normalized)
+# bias label
+if trend_score >= 60:
+    bias = "BUY"
+elif trend_score <= 40:
+    bias = "SELL"
+else:
+    bias = "NEUTRAL"
 
-# -------------------- Pro Candlestick (EMA + Volume + RSI) --------------------
-def plot_candles(frame: pd.DataFrame):
-    d = frame.copy()
-    d = d.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
-    d.index.name = "Date"
+# -------------- UI: Meter + Stats --------------
+st.subheader("Trend Strength Meter (0–100)")
+st.progress(int(trend_score))
 
-    add_plots = [
-        mpf.make_addplot(d["Close"].ewm(span=20, adjust=False).mean(), color="tab:blue", width=1.0),
-        mpf.make_addplot(d["Close"].ewm(span=50, adjust=False).mean(), color="tab:orange", width=1.0),
-    ]
-    # RSI on separate panel
-    rsi = ta.momentum.RSIIndicator(d["Close"], 14).rsi()
-    add_plots.append(mpf.make_addplot(rsi, panel=2, ylabel="RSI", width=1.0))
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Score", f"{trend_score:.0f}")
+c2.metric("RSI(14)", f"{last['rsi']:.1f}")
+c3.metric("EMA20", f"{last['ema20']:.1f}")
+c4.metric("EMA50", f"{last['ema50']:.1f}")
 
-    style = mpf.make_mpf_style(base_mpf_style="yahoo")
-    mpf.plot(
-        d.tail(300),                      # limit for speed
-        type="candle",
-        volume=True,
-        addplot=add_plots,
-        figratio=(18, 9),
-        figscale=1.2,
-        style=style,
-        panel_ratios=(5, 1, 2),          # price, volume, rsi
-        ylabel="Price",
-        ylabel_lower="Volume",
-        datetime_format="%d-%b %H:%M" if used[1] != "1d" else "%d-%b",
-        xrotation=0,
+if bias == "BUY":
+    st.success("Bias: BUY — strength on the long side.")
+elif bias == "SELL":
+    st.error("Bias: SELL — strength on the short side.")
+else:
+    st.info("Bias: NEUTRAL — wait for clarity or other modules.")
+
+with st.expander("Recent (last 60)"):
+    st.dataframe(idf.tail(60)[["open","high","low","close","volume","ema20","ema50","rsi"]])
+
+# -------------- SILENT SUPABASE SAVES (SMART MODE) --------------
+# Save current TF candles
+try:
+    sb_save_candles(df, symbol, interval)
+except Exception:
+    pass  # silent
+
+# Also save Daily candles (Smart Mode) for AI/history
+try:
+    daily_df = fetch(symbol, period="6mo", interval="1d", auto_adjust=True)
+    if daily_df is not None and not daily_df.empty:
+        sb_save_candles(daily_df, symbol, "1d")
+except Exception:
+    pass  # silent
+
+# Log module score to Supabase (for AI learning)
+try:
+    sb_record_module_score(
+        module="trend",
+        score=float(trend_score),
+        bias=bias,
+        symbol=symbol,
+        tf=interval,
+        meta={"period": period, "note": "Trend page"}
     )
+except Exception:
+    pass  # silent
 
-st.subheader("Candles + Volume + EMA20/50 + RSI")
-fig = mpf.figure(style="yahoo", figsize=(14, 7))
-plt.close(fig)  # avoid duplicate render in Streamlit
-plot_candles(idf)
-st.pyplot(plt.gcf(), clear_figure=True)
-
-# -------------------- Notes --------------------
-with st.expander("How is the score computed?", expanded=False):
-    st.write(
-        """
-- **EMA structure**: Close above EMA20 (+2), above EMA50 (+3). Below them: negative points.
-- **RSI**: RSI ≥ 60 (+3), RSI ≤ 40 (–3).
-- Raw score is normalized to **0–100** for the progress bar.
-- This is a quick bias meter for the chosen timeframe.
-        """
-    )
-
-# Save a tiny summary for Dashboard fusion (not heavy)
+# -------------- Save for Dashboard Fusion --------------
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["trend"] = {
-    "tf": tf,
-    "score": int(normalized),
+    "tf": interval,
+    "mode": "daily" if interval == "1d" else "intraday",
+    "final_score": float(trend_score),  # Dashboard expects final_score
     "bias": bias,
+    "symbol": symbol,
 }
-st.success("✅ Trend score saved for Dashboard fusion.")
+
+st.caption("✅ Trend score saved for Dashboard fusion.")
