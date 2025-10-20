@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
-
+from data_engine import fetch_smart
 # --- Optional dependencies (present in repo) ---
 # tv_client: our TradingView lightweight client (get_ohlcv)
 # supabase_client: preconfigured Supabase client + helpers
@@ -163,20 +163,26 @@ def fetch_tv(symbol: str, period: str, interval: str) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame()
 
-def fetch_yf(symbol: str, period: str, interval: str, auto_adjust: bool=True) -> pd.DataFrame:
-    """Yahoo Finance secondary fetch."""
-    if yf is None:
-        return pd.DataFrame()
-    try:
-        # Cap period against interval limits
-        lim = INTERVAL_LIMITS.get(interval, period)
-        p = period if lim == "max" else min_period(period, lim)
-        data = yf.download(symbol, period=p, interval=interval,
-                           progress=False, auto_adjust=auto_adjust, prepost=False, threads=True)
-        return sanitize_ohlcv(data)
-    except Exception:
-        return pd.DataFrame()
+def fetch(symbol: str, period: str, interval: str, auto_adjust: bool = True, mode: str = "auto"):
+    """
+    Wrapper used across pages.
+    period: "5d"/"1mo"/"3mo"/"1y"/"max" (your UI options)
+    interval: "5m"/"15m"/"1h"/"1d" (your UI options)
+    mode: "auto"|"daily-only"|"intraday"
+    """
+    # route to smart engine
+    df, meta = fetch_smart(symbol, prefer_period=period, prefer_interval=interval, mode=mode)
 
+    # sanitize (downstream pages expect numeric, no nans at ends)
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    for c in ["open", "high", "low", "close", "volume"]:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.dropna(subset=["close"])
+    return out
+    
 def min_period(requested: str, limit: str) -> str:
     """Return min(requested, limit) in 'Xd'/'Xmo'/'Yd' style — very coarse compare."""
     if limit == "max":
