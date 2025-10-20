@@ -1,36 +1,30 @@
-# =============================================================================
-# BankNifty Algo Engine - utils.py (NSE + Weekend Safe + AI Ready)
-# Version: Master Build - Haris / ChatGPT
-# Last Updated: 2025-10-19
-# =============================================================================
+# utils.py
 from __future__ import annotations
-
-import time
-from datetime import datetime, timedelta, timezone
-from typing import Tuple, Dict, List
-
 import numpy as np
 import pandas as pd
-import requests
-import yfinance as yf  # used only as a backup
-# utils.py (top section me add)
-from supabase_client import get_client
-from datetime import datetime, timezone
+import yfinance as yf
+from tenacity import retry, stop_after_attempt, wait_fixed
 
-# =============================================================================
-# Defaults & weights (used by multiple pages)
-# =============================================================================
+# TradingView client
+from tv_client import tv_fetch
 
-# BankNifty default symbol for yfinance; our NSE engine ignores the suffix internally.
+# Supabase (you already have this file in repo)
+try:
+    from supabase_client import get_client  # your helper
+except Exception:
+    get_client = None
+
 DEFAULT_SYMBOL = "NSEBANK.NS"
 
-WEIGHTS_DEFAULT: Dict[str, int] = {
-    "trend": 20,
-    "fibonacci": 25,
-    "priceaction": 15,
-    "smartmoney": 20,
-    "backtest": 10,
-    "others": 10,
+# app-level weights (unchanged)
+WEIGHTS_DEFAULT = {
+    "trend": 20, "fibonacci": 25, "priceaction": 15,
+    "smartmoney": 20, "backtest": 10, "others": 10,
+}
+
+INTERVAL_LIMITS = {
+    "1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "60d",
+    "60m": "730d", "90m": "60d", "1d": "max", "5d": "max", "1wk": "max", "1mo": "max"
 }
 
 # yfinance fallback combos (only if NSE API fails)
