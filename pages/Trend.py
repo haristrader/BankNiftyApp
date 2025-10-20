@@ -20,7 +20,9 @@ from utils import (
     fetch, DEFAULT_SYMBOL,
     sb_save_candles, sb_record_module_score
 )
-
+df, used, msg = fetch_smart("NSEBANK.NS", ("5d","5m"))
+st.write("DEBUG:", msg)
+st.dataframe(df.head())
 st.set_page_config(page_title="Trend Strength (EMA & RSI)", layout="wide", initial_sidebar_state="expanded")
 st.title("📈 Trend Strength (EMA & RSI)")
 
