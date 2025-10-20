@@ -1,0 +1,19 @@
+# pages/99_tv_test.py
+import streamlit as st
+import pandas as pd
+from utils import fetch
+
+st.set_page_config(page_title="Live Data Check - BankNifty (TV)", layout="wide")
+
+st.title("🔎 TradingView Live Data Check — BankNifty")
+tf = st.selectbox("Interval", ["5m","15m","1h","1d"], index=0)
+per = st.selectbox("Period", ["2d","5d","7d","14d","1mo","3mo"], index=1)
+
+df = fetch("NSEBANK.NS", period=per, interval=tf, auto_adjust=True)
+
+if df.empty:
+    st.error("No data returned. If market is closed try 1d/3mo, or check deployment logs.")
+else:
+    st.success(f"Rows: {len(df)}  |  From: {df.index.min()}  →  {df.index.max()}")
+    st.line_chart(df["close"])
+    st.dataframe(df.tail(50))
