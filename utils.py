@@ -92,6 +92,7 @@ def _period_days(period: str) -> int:
     """Approximate days for simple from/to epoch windows."""
     m = {"5d":5, "7d":7, "10d":10, "14d":14, "30d":30, "60d":60, "3mo":90, "6mo":180, "1y":365, "2y":730}
     return m.get(period, 14)
+    
 def _to_daily(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty: return df
     day = df.resample("1D").agg({
@@ -159,6 +160,36 @@ def supabase_cache_get_daily(symbol:str, limit:int=300) -> pd.DataFrame:
         return df
     except:
         return pd.DataFrame()
+        
+def fetch_tv(symbol=DEFAULT_SYMBOL, period="5d", interval="5m"):
+    try:
+        return tv_fetch(symbol, period, interval)
+    except:
+        return pd.DataFrame()
+
+
+def fetch_smart(symbol=DEFAULT_SYMBOL, period="5d", interval="5m", auto_adjust=True):
+    # 1️⃣ Try TradingView
+    df_tv = fetch_tv(symbol, period, interval)
+    if not df_tv.empty:
+        if interval == "1d":
+            supabase_cache_put_daily(symbol, df_tv)
+        return df_tv, "tv"
+
+    # 2️⃣ Fallback Yahoo
+    df_yf = fetch_yahoo(symbol, period, interval)
+    if not df_yf.empty:
+        if interval == "1d":
+            supabase_cache_put_daily(symbol, df_yf)
+        return df_yf, "yahoo"
+
+    # 3️⃣ Last: Supabase Cache
+    df_sb = supabase_cache_get_daily(symbol)
+    if not df_sb.empty:
+        return df_sb, "supabase"
+
+    return pd.DataFrame(), "none"
+    
 def fetch_nse_index(symbol: str, period: str, interval: str) -> pd.DataFrame:
     """
     Try NSE chart endpoints for OHLCV. Return cleaned DF or empty on failure.
