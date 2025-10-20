@@ -92,7 +92,73 @@ def _period_days(period: str) -> int:
     """Approximate days for simple from/to epoch windows."""
     m = {"5d":5, "7d":7, "10d":10, "14d":14, "30d":30, "60d":60, "3mo":90, "6mo":180, "1y":365, "2y":730}
     return m.get(period, 14)
+def _to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty: return df
+    day = df.resample("1D").agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum"
+    }).dropna()
+    day.index.name = "Date"
+    return day
 
+@retry(stop=stop_after_attempt(2), wait=wait_fixed(1))
+def fetch_yahoo(symbol=DEFAULT_SYMBOL, period="14d", interval="5m", auto_adjust=True) -> pd.DataFrame:
+    df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=auto_adjust)
+    if df is None or df.empty: return pd.DataFrame()
+    df = df.rename(columns={"Open":"open","High":"high","Low":"low","Close":"close","Adj Close":"adj_close","Volume":"volume"})
+    df = df[["open","high","low","close","volume"]].dropna().sort_index()
+    try:
+        df.index = pd.to_datetime(df.index).tz_convert(None)
+    except:
+        df.index = pd.to_datetime(df.index)
+    df.index.name = "Date"
+    return df
+
+
+def _sb_table():
+    if get_client is None: return None
+    try:
+        return get_client().table("candles_daily")
+    except:
+        return None
+
+
+def supabase_cache_put_daily(symbol:str, df:pd.DataFrame) -> None:
+    tbl = _sb_table()
+    if tbl is None or df.empty: return
+    rows = []
+    for ts, r in df.iterrows():
+        rows.append({
+            "symbol": symbol.upper(),
+            "date": pd.to_datetime(ts).date().isoformat(),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": float(r.get("volume", 0.0)),
+        })
+    try:
+        tbl.upsert(rows, on_conflict="symbol,date").execute()
+    except:
+        pass
+
+
+def supabase_cache_get_daily(symbol:str, limit:int=300) -> pd.DataFrame:
+    tbl = _sb_table()
+    if tbl is None: return pd.DataFrame()
+    try:
+        data = tbl.select("*").eq("symbol", symbol.upper()).order("date", desc=False).limit(limit).execute().data
+        if not data: return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["Date"] = pd.to_datetime(df["date"])
+        df = df.set_index("Date")[["open","high","low","close","volume"]].sort_index()
+        df.index.name = "Date"
+        return df
+    except:
+        return pd.DataFrame()
 def fetch_nse_index(symbol: str, period: str, interval: str) -> pd.DataFrame:
     """
     Try NSE chart endpoints for OHLCV. Return cleaned DF or empty on failure.
