@@ -1,220 +1,196 @@
-# data_engine.py
-from __future__ import annotations
-import os
-import time
-import math
-import datetime as dt
-from typing import Tuple, Dict, Optional
-
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import yfinance as yf
+from datetime import datetime, timedelta
+from utils import save_candles_supabase  # compatible alias for sb_save_candles
 
-# ---------- Config ----------
-# Index symbol normalizer (Yahoo finance tickers)
-INDEX_MAP = {
-    "BANKNIFTY": "^NSEBANK",
-    "NSEBANK.NS": "^NSEBANK",
-    "NIFTYBANK.NS": "^NSEBANK",
-    "NIFTY BANK": "^NSEBANK",
-    "BANKNIFTY.NS": "^NSEBANK",
-}
+# ---------------------------------------------------------------
+# 🧱 CONFIG
+# ---------------------------------------------------------------
+DEFAULT_SYMBOL = "^NSEBANK"  # works reliably with Yahoo Finance
+DEFAULT_PERIOD = "5d"
+DEFAULT_INTERVAL = "5m"
 
-BANK_UNIVERSE = [
-    "HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "SBIN.NS"
-]
 
-# yfinance interval constraints (doc-based)
-# (this helps us auto-downgrade period if the combo is invalid)
-YF_MAX_BY_INTERVAL = {
-    "1m":  "7d",
-    "2m":  "60d",
-    "5m":  "60d",
-    "15m": "60d",
-    "30m": "60d",
-    "60m": "730d",   # ~2y
-    "90m": "730d",
-    "1h":  "730d",   # alias to 60m, yfinance accepts '60m'
-    "1d":  "max",
-    "5d":  "max",
-    "1wk": "max",
-    "1mo": "max",
-    "3mo": "max",
-}
+# ---------------------------------------------------------------
+# 🔹 CORE FUNCTION: FETCH & NORMALIZE
+# ---------------------------------------------------------------
 
-# -------- Helpers --------
-def _normalize_symbol(symbol: str) -> str:
-    s = (symbol or "").strip().upper()
-    if s in INDEX_MAP:
-        return INDEX_MAP[s]
-    # if someone passed NSEBANK.NS, map to ^NSEBANK
-    if s.endswith(".NS") and s.startswith("NSEBANK"):
-        return "^NSEBANK"
-    return s
-
-def _fix_interval(interval: str) -> str:
-    # unify friendly strings
-    m = interval.lower().strip()
-    if m == "1h":
-        return "60m"
-    return m
-
-def _safe_period_for_interval(interval: str, period: str) -> str:
-    """If user asks invalid combo, auto-downgrade period safely."""
-    interval = _fix_interval(interval)
-    maxp = YF_MAX_BY_INTERVAL.get(interval, "60d")
-    if maxp == "max":
-        return period
-    # convert like '5d','60d','1y' to comparable days
-    def to_days(p: str) -> int:
-        p = p.lower()
-        if p.endswith("d"): return int(p[:-1])
-        if p.endswith("mo"): return int(p[:-2]) * 30
-        if p.endswith("y"): return int(p[:-1]) * 365
-        if p in ("max",): return 10_000
-        return 7  # default
-    if to_days(period) > to_days(maxp):
-        return maxp
-    return period
-
-# -------- Public API --------
-def get_candles(
-    symbol: str,
-    period: str = "5d",
-    interval: str = "5m",
-    auto_adjust: bool = True,
-    prepost: bool = False,
-    tz_localize: bool = True
-) -> pd.DataFrame:
+def get_candles(symbol=DEFAULT_SYMBOL, period=DEFAULT_PERIOD, interval=DEFAULT_INTERVAL):
     """
-    Unified market data fetcher using yfinance with safe fallbacks.
-    Returns columns: ['open','high','low','close','volume'] (lowercase)
-    Index = DatetimeIndex (tz-aware if available).
+    Fetch OHLCV data safely from Yahoo Finance and normalize columns.
+    Handles MultiIndex issue and converts to lowercase column names.
     """
-    yf_symbol = _normalize_symbol(symbol)
-    interval = _fix_interval(interval)
-    period = _safe_period_for_interval(interval, period)
+    try:
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+
+        # ---- FIX: Handle MultiIndex safely ----
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [
+                c[0].lower() if isinstance(c, tuple) else str(c).lower()
+                for c in df.columns
+            ]
+        else:
+            df.columns = [str(c).lower() for c in df.columns]
+
+        # Reset and clean
+        df.reset_index(inplace=True)
+        df.rename(columns={"datetime": "date"}, inplace=True)
+        df["date"] = pd.to_datetime(df["date"])
+        df.dropna(inplace=True)
+
+        # Ensure required columns
+        required_cols = {"open", "high", "low", "close", "volume"}
+        for col in required_cols:
+            if col not in df.columns:
+                df[col] = np.nan
+
+        return df
+
+    except Exception as e:
+        print(f"❌ Error fetching candles: {str(e)}")
+        return pd.DataFrame()
+
+
+# ---------------------------------------------------------------
+# 🔹 FETCHER FOR SMART MODULES (TREND / FIB / PRICEACTION)
+# ---------------------------------------------------------------
+
+def fetch_smart(symbol=DEFAULT_SYMBOL, period="5d", interval="5m", prefer="auto"):
+    """
+    Smart fetch layer for all modules.
+    prefer = 'auto' | 'supabase' | 'live'
+    """
+    df = pd.DataFrame()
+    msg = ""
 
     try:
-        df = yf.download(
-            tickers=yf_symbol,
-            period=period,
-            interval=interval,
-            auto_adjust=auto_adjust,
-            prepost=prepost,
-            progress=False,
-            threads=True
-        )
-    except Exception:
-        df = pd.DataFrame()
+        df = get_candles(symbol, period, interval)
+        if not df.empty:
+            msg = f"✅ {symbol}: {len(df)} rows loaded ({interval}, {period})"
+        else:
+            msg = f"⚠️ {symbol}: No data available for {interval} / {period}"
 
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["open","high","low","close","volume"])
+    except Exception as e:
+        msg = f"❌ Fetch error: {str(e)}"
 
-    # Standardize columns
-    cols = {c.lower():c for c in df.columns.str.lower()}
-    for need in ["open","high","low","close","volume"]:
-        if need not in cols:
-            # Try with Yahoo naming
-            if need.capitalize() in df.columns:
-                cols[need] = need.capitalize()
-    rename_map = {cols.get(k, k): k for k in ["open","high","low","close","volume"] if cols.get(k)}
-    sdf = df.rename(columns={v:k for k,v in rename_map.items()})
-    # Keep only these
-    sdf = sdf[["open","high","low","close","volume"]].copy()
+    return df, msg
 
-    # ensure datetime index
-    if not isinstance(sdf.index, pd.DatetimeIndex):
-        sdf.index = pd.to_datetime(sdf.index)
 
-    if tz_localize:
-        try:
-            # yfinance returns tz-aware sometimes; normalize to naive local
-            sdf.index = sdf.index.tz_localize(None)
-        except Exception:
-            pass
+# ---------------------------------------------------------------
+# 🔹 FEATURE: BASIC INDICATORS (EMA, RSI)
+# ---------------------------------------------------------------
 
-    return sdf.dropna(how="any")
-
-# ---- Indicators ----
-def ema(series: pd.Series, length: int) -> pd.Series:
-    return series.ewm(span=length, adjust=False).mean()
-
-def rsi(close: pd.Series, length: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = np.where(delta > 0, delta, 0.0)
-    loss = np.where(delta < 0, -delta, 0.0)
-    roll_up = pd.Series(gain, index=close.index).ewm(alpha=1/length, adjust=False).mean()
-    roll_dn = pd.Series(loss, index=close.index).ewm(alpha=1/length, adjust=False).mean()
-    rs = roll_up / (roll_dn.replace(0, np.nan))
-    out = 100 - (100 / (1 + rs))
-    return out.fillna(50.0)
-
-def ema_rsi_block(df: pd.DataFrame, ema_fast=20, ema_slow=50, rsi_len=14) -> pd.DataFrame:
-    out = df.copy()
-    out[f"ema{ema_fast}"] = ema(out["close"], ema_fast)
-    out[f"ema{ema_slow}"] = ema(out["close"], ema_slow)
-    out[f"rsi{rsi_len}"] = rsi(out["close"], rsi_len)
-    return out
-
-# ---- Fibonacci Swing (simple) ----
-def last_swing(df: pd.DataFrame, lookback: int = 200) -> Tuple[float, float]:
+def compute_indicators(df):
     """
-    Find swing high/low in the last `lookback` candles (not necessarily extremes of whole dataset).
+    Compute EMA and RSI for any DataFrame (used by Trend, PriceAction, etc.)
     """
-    data = df.tail(lookback)
-    s_low = float(data["low"].min())
-    s_high = float(data["high"].max())
-    return s_low, s_high
+    if df.empty:
+        return df
 
-def fib_levels(swing_low: float, swing_high: float) -> Dict[str, float]:
-    diff = swing_high - swing_low
-    return {
-        "0%": swing_high,
-        "23.6%": swing_high - 0.236*diff,
-        "38.2%": swing_high - 0.382*diff,
-        "50%": swing_high - 0.5*diff,
-        "60%": swing_high - 0.6*diff,   # your special band
-        "61.8%": swing_high - 0.618*diff,
-        "78.6%": swing_high - 0.786*diff,
-        "100%": swing_low
-    }
+    df["ema20"] = df["close"].ewm(span=20, adjust=False).mean()
+    df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
 
-# ---- Mid-zone signal (50–60%) ----
-def midzone_signals(df: pd.DataFrame, swing_lookback=200) -> pd.DataFrame:
-    """
-    Mark when close enters 50–60% zone between latest swing high/low.
-    """
-    out = df.copy()
-    s_low, s_high = last_swing(out, lookback=swing_lookback)
-    fib = fib_levels(s_low, s_high)
-    lo = min(fib["50%"], fib["60%"])
-    hi = max(fib["50%"], fib["60%"])
-    out["midzone"] = (out["close"].between(lo, hi)).astype(int)
-    out["midzone_low"] = lo
-    out["midzone_high"] = hi
-    return out
+    delta = df["close"].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
 
-# ---- Smart Money (simple “trap/absorption” heuristic) ----
-def smart_money_flags(df: pd.DataFrame, wick_ratio=0.6, vol_mult=1.5) -> pd.DataFrame:
-    """
-    Very light heuristic:
-      - large wick relative to candle size -> possible trap/absorption
-      - volume spike vs rolling mean
-    """
-    out = df.copy()
-    body = (out["close"] - out["open"]).abs()
-    upper_wick = out["high"] - out[["close","open"]].max(axis=1)
-    lower_wick = out[["close","open"]].min(axis=1) - out["low"]
-    rng = (out["high"] - out["low"]).replace(0, np.nan)
-    out["upper_wick_ratio"] = (upper_wick / rng).fillna(0)
-    out["lower_wick_ratio"] = (lower_wick / rng).fillna(0)
-    out["vol_ma"] = out["volume"].rolling(50).mean()
-    # trap if wick big and volume spike
-    out["trap_up"] = ((out["upper_wick_ratio"] > wick_ratio) & (out["volume"] > vol_mult*out["vol_ma"])).astype(int)
-    out["trap_dn"] = ((out["lower_wick_ratio"] > wick_ratio) & (out["volume"] > vol_mult*out["vol_ma"])).astype(int)
-    return out
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
 
-# ---- Bank Impact helper ----
-def bank_universe() -> list:
-    return BANK_UNIVERSE[:]
+    rs = avg_gain / (avg_loss + 1e-10)
+    df["rsi"] = 100 - (100 / (1 + rs))
+
+    return df
+
+
+# ---------------------------------------------------------------
+# 🔹 FEATURE: SUPABASE SAVE WRAPPER
+# ---------------------------------------------------------------
+
+def upload_to_supabase(df, table="banknifty_candles"):
+    """
+    Optional upload helper for saving candles to Supabase.
+    """
+    if df.empty:
+        return "⚠️ No data to upload."
+    return save_candles_supabase(df, table_name=table)
+
+
+# ---------------------------------------------------------------
+# 🔹 FEATURE: PRICE ACTION SIGNAL (Mid-Zone Strategy)
+# ---------------------------------------------------------------
+
+def generate_signals(df):
+    """
+    Simple price-action strategy signal generator.
+    1 = Buy signal, -1 = Sell signal
+    """
+    if df.empty:
+        return df
+
+    df["mid_zone"] = (df["high"] + df["low"]) / 2
+    df["signal"] = np.where(df["close"] > df["mid_zone"], 1, -1)
+    return df
+
+
+# ---------------------------------------------------------------
+# 🔹 FEATURE: TREND STRENGTH (EMA-RSI COMBO)
+# ---------------------------------------------------------------
+
+def trend_strength(df):
+    """
+    Combine EMA and RSI into a single trend strength metric.
+    """
+    if df.empty or "ema20" not in df or "rsi" not in df:
+        return 0
+
+    ema_score = np.where(df["ema20"].iloc[-1] > df["ema50"].iloc[-1], 1, -1)
+    rsi_score = 1 if df["rsi"].iloc[-1] > 50 else -1
+
+    return round((ema_score + rsi_score) / 2, 2)
+
+
+# ---------------------------------------------------------------
+# 🔹 FEATURE: AUTO PAPER-TRADE SIMULATION ENGINE (Virtual Capital)
+# ---------------------------------------------------------------
+
+def simulate_paper_trade(df, initial_capital=10000, lot_size=15):
+    """
+    Simulate virtual trading using simple signals.
+    Shows how much capital would change on signal-based trades.
+    """
+    if df.empty or "signal" not in df:
+        return initial_capital, []
+
+    capital = initial_capital
+    trade_log = []
+
+    last_signal = 0
+    entry_price = 0
+
+    for i, row in df.iterrows():
+        if row["signal"] != last_signal:
+            # Close previous position
+            if last_signal != 0 and entry_price > 0:
+                pnl = (row["close"] - entry_price) * lot_size * last_signal
+                capital += pnl
+                trade_log.append({
+                    "date": row["date"],
+                    "action": "EXIT",
+                    "price": row["close"],
+                    "pnl": pnl,
+                    "balance": capital
+                })
+            # Open new position
+            last_signal = row["signal"]
+            entry_price = row["close"]
+            trade_log.append({
+                "date": row["date"],
+                "action": "ENTRY",
+                "signal": last_signal,
+                "price": row["close"],
+                "balance": capital
+            })
+
+    return capital, trade_log
