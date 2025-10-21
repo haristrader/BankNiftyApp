@@ -1,10 +1,10 @@
 streamlit
-pandas
-numpy
-yfinance
-matplotlib
-mplfinance
-ta
+pandas==2.2.2
+numpy==1.26.4
+yfinance==0.2.38
+matplotlib==3.8.3
+mplfinance==0.12.10b0
+ta==0.11.0
 requests
 supabase
 plotly
