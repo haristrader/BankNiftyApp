@@ -1,26 +1,22 @@
 # pages/Smart_Money.py
 # -------------------------------------------------------------
-# Smart Money (PRO) — Trap Engine for BankNifty
-# - Weekend-safe: auto daily fallback if intraday missing
-# - Detects Bull/Bear Traps, Stop-hunts, Absorption
-# - Volume anomaly + Wick structure + Breakout validity
-# - Optional RSI divergence signal
-# - Returns Score (0–100) + Bias + recent trap table
-# - Saves to st.session_state["performance"]["smartmoney"]
+# Smart Money (PRO++) — True Trap / Absorption Engine for BankNifty
+# Weekend-safe + Institutional Imbalance Factor (IIF)
+# Detects bull/bear traps, absorption, stop-hunts, RSI divergence
+# Outputs Score (0–100) + Bias + Recent trap summary
 # -------------------------------------------------------------
+
 import streamlit as st
-import pandas as pd
-import numpy as np
-import ta
+import pandas as pd, numpy as np
 import mplfinance as mpf
+import ta
+from utils import fetch_smart
 
-from utils import fetch_smart  # (df, used, msg)
+st.set_page_config(page_title="Smart Money (PRO++)", layout="wide")
+st.title("🧠 Smart Money — Trap & Absorption Engine (Pro-Level)")
 
-st.set_page_config(page_title="Smart Money (Trap Engine)", layout="wide", initial_sidebar_state="expanded")
-st.title("🧠 Smart Money — Trap / Absorption Engine (PRO)")
-
-# --------------------- Controls ---------------------
-DEFAULT_SYMBOL = "NSEBANK.NS"  # stay consistent with your other pages
+# ---------------- Controls ----------------
+DEFAULT_SYMBOL = "NSEBANK.NS"
 
 c1, c2, c3, c4 = st.columns([1.3, 1.1, 1.1, 1.3])
 with c1:
@@ -28,261 +24,141 @@ with c1:
 with c2:
     tf = st.selectbox("Timeframe", ["5m", "15m", "60m", "1d"], index=0)
 with c3:
-    lookback_days = st.selectbox("Lookback (approx.)", ["5d","14d","30d","3mo","6mo"], index=1)
+    lookback = st.selectbox("Lookback", ["5d", "14d", "30d", "3mo", "6mo"], index=1)
 with c4:
-    data_mode = st.radio("Data Mode", ["🔴 Live Intraday", "🟦 Offline / Daily (Safe)"], index=0, horizontal=True)
+    mode = st.radio("Mode", ["🔴 Live", "🟦 Safe / Daily"], index=0, horizontal=True)
 
-TF_PREF = {
-    "5m":  ("5d",  "5m"),
-    "15m": ("14d", "15m"),
-    "60m": ("60d", "60m"),
-    "1d":  ("6mo", "1d"),
-}
-prefer = TF_PREF.get(tf, ("5d", "5m"))
+TF_PREF = {"5m": ("5d","5m"), "15m": ("14d","15m"), "60m": ("60d","60m"), "1d": ("6mo","1d")}
+prefer = TF_PREF.get(tf, ("5d","5m"))
+if mode.startswith("🟦") or tf == "1d":
+    prefer = ("6mo","1d")
+prefer = (lookback, prefer[1])
 
-# force safe daily when chosen or timeframe is daily
-if data_mode.startswith("🟦") or tf == "1d":
-    prefer = ("6mo", "1d")
+# ---------------- Data fetch ----------------
+with st.spinner("Fetching price/volume data..."):
+    df, used, msg = fetch_smart(symbol, prefer=prefer)
 
-# tune by lookback selector
-period_override = {
-    "5d": "5d", "14d": "14d", "30d": "30d", "3mo": "3mo", "6mo": "6mo"
-}[lookback_days]
-prefer = (period_override, prefer[1])
-
-# ------------------ Fetch (with fallback) ------------------
-@st.cache_data(ttl=180)
-def _cached_fetch(t, p):
-    return fetch_smart(t, prefer=p)
-
-def _get_with_fallback(ticker, prefer_tuple):
-    df, used, msg = _cached_fetch(ticker, prefer_tuple)
-    used_fallback = False
-    # fallback to daily if intraday is thin/absent
-    if (df is None or df.empty) or (used and used[1] != "1d" and len(df) < 60):
-        df2, used2, msg2 = _cached_fetch(ticker, ("6mo", "1d"))
-        if df2 is not None and not df2.empty:
-            return df2, used2, "Using Daily fallback (market likely closed).", True
-        return df, used, msg or msg2, used_fallback
-    return df, used, msg, used_fallback
-
-with st.spinner("Fetching price/volume…"):
-    df, used, info_msg, used_fallback = _get_with_fallback(symbol, prefer)
-
-if info_msg:
-    st.caption(f"ℹ️ {info_msg}")
-if used_fallback:
-    st.warning("⚠️ Intraday not available — switched to **Daily OHLC** auto fallback.")
-
+if msg: st.info(msg)
 if df is None or df.empty:
-    st.error("No data received. Try different timeframe/period or market hours.")
+    st.warning("⚠️ No data received. Market may be closed or source unreachable.")
     st.stop()
 
-# ------------------ Feature Engineering ------------------
-def build_features(d: pd.DataFrame) -> pd.DataFrame:
-    out = d.copy()
-    # Ensure required columns lowercase
-    out = out.rename(columns=str.lower)[["open","high","low","close","volume"]].dropna()
+st.caption(f"Using period={used[0]} interval={used[1]} | candles={len(df)}")
 
-    # Price structure
-    out["body"] = (out["close"] - out["open"]).abs()
-    out["range"] = (out["high"] - out["low"]).replace(0, np.nan)
-    out["upper_wick"] = out["high"] - out[["close","open"]].max(axis=1)
-    out["lower_wick"] = out[["close","open"]].min(axis=1) - out["low"]
-    out["wick_ratio"] = ((out["upper_wick"] + out["lower_wick"]) / out["range"]).fillna(0)
-
-    # Averages
-    out["vol_ma20"] = out["volume"].rolling(20).mean()
-    out["vol_factor"] = (out["volume"] / out["vol_ma20"]).replace([np.inf, -np.inf], np.nan).fillna(0)
-
-    # Indicators
-    out["ema20"] = ta.trend.EMAIndicator(close=out["close"], window=20).ema_indicator()
-    out["ema50"] = ta.trend.EMAIndicator(close=out["close"], window=50).ema_indicator()
-    out["rsi"]    = ta.momentum.RSIIndicator(close=out["close"], window=14).rsi()
-
-    # HH/LL refs for breakout checks (prev bar high/low)
-    out["prev_high"] = out["high"].shift(1)
-    out["prev_low"]  = out["low"].shift(1)
-
-    # Simple ATR for scaling
-    tr = ta.volatility.AverageTrueRange(
-        high=out["high"], low=out["low"], close=out["close"], window=14
-    ).average_true_range()
-    out["atr"] = tr
-
-    return out.dropna()
+# ---------------- Feature Engineering ----------------
+def build_features(d):
+    d = d.rename(columns=str.lower).copy()
+    d = d[["open","high","low","close","volume"]].dropna()
+    d["body"] = (d["close"] - d["open"]).abs()
+    d["range"] = (d["high"] - d["low"]).replace(0,np.nan)
+    d["upper_wick"] = d["high"] - d[["open","close"]].max(axis=1)
+    d["lower_wick"] = d[["open","close"]].min(axis=1) - d["low"]
+    d["vol_ma20"] = d["volume"].rolling(20).mean()
+    d["vol_factor"] = (d["volume"]/d["vol_ma20"]).fillna(0)
+    d["ema20"] = ta.trend.EMAIndicator(d["close"],20).ema_indicator()
+    d["ema50"] = ta.trend.EMAIndicator(d["close"],50).ema_indicator()
+    d["rsi"] = ta.momentum.RSIIndicator(d["close"],14).rsi()
+    d["prev_high"], d["prev_low"] = d["high"].shift(1), d["low"].shift(1)
+    return d.dropna()
 
 feat = build_features(df)
-if feat.empty or len(feat) < 50:
-    st.warning("Not enough candles to compute Smart Money metrics.")
-    st.stop()
 
-# ------------------ Trap / Absorption Logic ------------------
-def detect_traps(f: pd.DataFrame) -> pd.DataFrame:
-    t = f.copy()
+# ---------------- Trap Detection ----------------
+def detect_traps(f):
+    f = f.copy()
+    f["trap_type"] = ""
+    f["upper_break"] = f["high"] > f["prev_high"]
+    f["lower_break"] = f["low"] < f["prev_low"]
 
-    # Breakout conditions vs previous high/low
-    t["upper_break"] = t["close"] > t["prev_high"]
-    t["lower_break"] = t["close"] < t["prev_low"]
+    # Fake breakouts
+    f["reject_down"] = f["upper_break"] & (f["close"] < f["prev_high"])
+    f["reject_up"] = f["lower_break"] & (f["close"] > f["prev_low"])
 
-    # Rejection back inside range (fake breakout)
-    t["reject_down"] = (t["upper_break"]) & (t["close"] < t["prev_high"])
-    t["reject_up"]   = (t["lower_break"]) & (t["close"] > t["prev_low"])
+    # Long wicks
+    f["long_upper"] = (f["upper_wick"]/f["range"]) > 0.45
+    f["long_lower"] = (f["lower_wick"]/f["range"]) > 0.45
 
-    # Long wick definitions
-    t["long_upper"] = (t["upper_wick"] / t["range"]) > 0.45
-    t["long_lower"] = (t["lower_wick"] / t["range"]) > 0.45
+    # Stop-hunts
+    f["bull_trap"] = (f["reject_down"] | f["long_upper"]) & f["upper_break"]
+    f["bear_trap"] = (f["reject_up"] | f["long_lower"]) & f["lower_break"]
 
-    # Stop-hunt style: big wick (> ATR fraction) + close opposite third
-    t["big_up_wick"]   = (t["upper_wick"] > 0.6 * t["atr"]) & (t["close"] < (t["low"] + 0.33 * t["range"]))
-    t["big_down_wick"] = (t["lower_wick"] > 0.6 * t["atr"]) & (t["close"] > (t["high"] - 0.33 * t["range"]))
+    # Absorption
+    mid = f["low"] + 0.5*f["range"]
+    f["absorb_buy"] = (f["vol_factor"]>1.6) & (f["close"]<mid) & (f["close"]>f["open"])
+    f["absorb_sell"] = (f["vol_factor"]>1.6) & (f["close"]>mid) & (f["close"]<f["open"])
 
-    # Volume anomaly
-    t["hi_vol"] = t["vol_factor"] > 1.4
-    t["lo_vol"] = t["vol_factor"] < 0.8
-
-    # Trap tags
-    t["trap_type"] = ""
-    # Bull Trap: pokes above then closes back with long upper or stop-hunt, often on hi/lo vol
-    bull_trap = (t["reject_down"] | t["big_up_wick"]) & (t["long_upper"]) & (t["lo_vol"] | t["hi_vol"])
-    # Bear Trap: pokes below then closes back with long lower or stop-hunt
-    bear_trap = (t["reject_up"] | t["big_down_wick"]) & (t["long_lower"]) & (t["lo_vol"] | t["hi_vol"])
-    t.loc[bull_trap, "trap_type"] = "BULL_TRAP"   # bearish implication
-    t.loc[bear_trap, "trap_type"] = "BEAR_TRAP"   # bullish implication
-
-    # Absorption bars (institutional soaking): high volume + small body + closes into mid
-    mid = t["low"] + 0.5 * t["range"]
-    t["absorb"] = (t["vol_factor"] > 1.6) & (t["body"] < 0.35 * t["range"]) & (
-        ((t["close"] < mid) & (t["close"] > t["open"])) | ((t["close"] > mid) & (t["close"] < t["open"]))
-    )
-    t.loc[t["absorb"] & (t["close"] > t["open"]), "trap_type"] = t["trap_type"].replace("", "ABSORB_BUY")
-    t.loc[t["absorb"] & (t["close"] < t["open"]), "trap_type"] = t["trap_type"].replace("", "ABSORB_SELL")
-
-    # Optional: RSI divergence signals (very light)
-    # Bearish div: price higher high but RSI lower high
-    t["price_hh"] = t["high"] > t["high"].shift(2)
-    t["rsi_lh"]   = t["rsi"] < t["rsi"].shift(2)
-    t["bear_div"] = t["price_hh"] & t["rsi_lh"]
-
-    # Bullish div: price lower low but RSI higher low
-    t["price_ll"] = t["low"] < t["low"].shift(2)
-    t["rsi_hl"]   = t["rsi"] > t["rsi"].shift(2)
-    t["bull_div"] = t["price_ll"] & t["rsi_hl"]
-
-    return t
+    f.loc[f["bull_trap"], "trap_type"] = "BULL_TRAP"
+    f.loc[f["bear_trap"], "trap_type"] = "BEAR_TRAP"
+    f.loc[f["absorb_buy"], "trap_type"] = "ABSORB_BUY"
+    f.loc[f["absorb_sell"], "trap_type"] = "ABSORB_SELL"
+    return f
 
 feat2 = detect_traps(feat)
 
-# ------------------ Scoring Model (0–100) ------------------
-def smart_money_score(f: pd.DataFrame, window: int = 40) -> tuple[float, str, pd.DataFrame]:
-    recent = f.tail(window).copy()
+# ---------------- Smart Money Scoring ----------------
+def compute_score(f, window=60):
+    d = f.tail(window)
+    score = 50
+    bull, bear = (d["trap_type"]=="BULL_TRAP").sum(), (d["trap_type"]=="BEAR_TRAP").sum()
+    ab_buy, ab_sell = (d["trap_type"]=="ABSORB_BUY").sum(), (d["trap_type"]=="ABSORB_SELL").sum()
+    iif = ((ab_buy + bear) - (ab_sell + bull)) * 2.2  # Institutional Imbalance Factor
+    score += iif
+    score = float(np.clip(score, 0, 100))
+    bias = "BUY" if score>60 else "SELL" if score<40 else "NEUTRAL"
+    traps = d[d["trap_type"]!=""][["open","high","low","close","volume","trap_type"]].tail(25)
+    return score, bias, traps
 
-    bull_traps = (recent["trap_type"] == "BULL_TRAP").sum()
-    bear_traps = (recent["trap_type"] == "BEAR_TRAP").sum()
-    absorb_buy = (recent["trap_type"] == "ABSORB_BUY").sum()
-    absorb_sell= (recent["trap_type"] == "ABSORB_SELL").sum()
+score, bias, traps = compute_score(feat2)
 
-    # Divergences (we keep weight light)
-    bull_div   = recent["bull_div"].sum()
-    bear_div   = recent["bear_div"].sum()
-
-    # Volume balance
-    hv = (recent["hi_vol"]).sum()
-    lv = (recent["lo_vol"]).sum()
-
-    # Start at neutral 50; add/deduct signals
-    score = 50.0
-    # Bearish signals (downward pressure)
-    score -= bull_traps * 6.5
-    score -= absorb_sell * 3.5
-    score -= bear_div * 2.0
-    # Bullish signals
-    score += bear_traps * 6.5
-    score += absorb_buy * 3.5
-    score += bull_div * 2.0
-
-    # Volume tilt (hi_vol more weight than lo_vol)
-    score += (hv - lv) * 0.5
-
-    score = float(np.clip(score, 0.0, 100.0))
-    if score >= 60:
-        bias = "BUY"
-    elif score <= 40:
-        bias = "SELL"
-    else:
-        bias = "NEUTRAL"
-
-    # traps table (latest 20 with non-empty types)
-    traps_tbl = recent[recent["trap_type"] != ""].tail(20).copy()
-    traps_tbl = traps_tbl[["open","high","low","close","volume","vol_factor","upper_wick","lower_wick","trap_type"]]
-    traps_tbl = traps_tbl.rename(columns={
-        "vol_factor":"volX","upper_wick":"up_wick","lower_wick":"dn_wick"
-    })
-    traps_tbl["volX"] = traps_tbl["volX"].round(2)
-    traps_tbl["up_wick"] = traps_tbl["up_wick"].round(2)
-    traps_tbl["dn_wick"] = traps_tbl["dn_wick"].round(2)
-
-    return score, bias, traps_tbl
-
-score, bias, traps = smart_money_score(feat2, window=60)
-
-# ------------------ UI: Score + Bias ------------------
-st.subheader("Smart Money Score (0–100)")
+# ---------------- UI ----------------
+st.subheader("Smart Money Sentiment")
 st.progress(int(score))
-if bias == "BUY":
-    st.success(f"Accumulation / Bear Traps dominant — **{score:.0f}/100 (BUY)**")
-elif bias == "SELL":
-    st.error(f"Distribution / Bull Traps dominant — **{score:.0f}/100 (SELL)**")
+if bias=="BUY":
+    st.success(f"Institutions likely accumulating — Score {score:.1f}/100 (BUY)")
+elif bias=="SELL":
+    st.error(f"Distribution pressure detected — Score {score:.1f}/100 (SELL)")
 else:
-    st.info(f"Mixed / Neutral flows — **{score:.0f}/100 (NEUTRAL)**")
+    st.info(f"Balanced activity — Score {score:.1f}/100 (NEUTRAL)")
 
-# ------------------ Mini Candlestick with markers ------------------
-def _plot_mini(idf: pd.DataFrame, ttl: str):
-    d = idf.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"}).copy()
-    d.index.name = "Date"
-    d = d.tail(140)
+# ---------------- Chart ----------------
+st.subheader("📊 Trap Markers (Smart Money View)")
+plot_df = feat2.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"}).copy()
+plot_df.index.name="Date"
+plot_df = plot_df.tail(200)
 
-    # Markers for traps
-    marker_buy  = idf["trap_type"].isin(["BEAR_TRAP","ABSORB_BUY"])
-    marker_sell = idf["trap_type"].isin(["BULL_TRAP","ABSORB_SELL"])
-    add = []
+buy_y, sell_y = np.full(len(plot_df), np.nan), np.full(len(plot_df), np.nan)
+for i, row in enumerate(feat2.tail(200).itertuples()):
+    if row.trap_type in ["BEAR_TRAP","ABSORB_BUY"]:
+        buy_y[i] = row.close*0.995
+    elif row.trap_type in ["BULL_TRAP","ABSORB_SELL"]:
+        sell_y[i] = row.close*1.005
 
-    if marker_buy.any():
-        buy_series = pd.Series(np.where(marker_buy.tail(140), d["Close"], np.nan), index=d.index)
-        add.append(mpf.make_addplot(buy_series, type='scatter', markersize=40, marker='^'))
-    if marker_sell.any():
-        sell_series = pd.Series(np.where(marker_sell.tail(140), d["Close"], np.nan), index=d.index)
-        add.append(mpf.make_addplot(sell_series, type='scatter', markersize=40, marker='v'))
+apds = [
+    mpf.make_addplot(buy_y, type="scatter", marker="^", color="lime", markersize=70),
+    mpf.make_addplot(sell_y, type="scatter", marker="v", color="red", markersize=70)
+]
 
-    # EMAs
-    add.append(mpf.make_addplot(d["Close"].ewm(span=20, adjust=False).mean(), width=0.8))
-    add.append(mpf.make_addplot(d["Close"].ewm(span=50, adjust=False).mean(), width=0.8))
+style = mpf.make_mpf_style(base_mpf_style="yahoo", facecolor="#111")
+fig, _ = mpf.plot(plot_df, type="candle", volume=True, addplot=apds, style=style,
+                  figratio=(18,9), figscale=1.1, returnfig=True,
+                  title=f"{symbol} • Smart Money {bias}")
+st.pyplot(fig, clear_figure=True)
 
-    style = mpf.make_mpf_style(base_mpf_style="yahoo")
-    fig = mpf.figure(style=style, figsize=(11, 4))
-    ax  = fig.add_subplot(1,1,1)
-    mpf.plot(d, type="candle", addplot=add, volume=False, ax=ax, xrotation=0)
-    ax.set_title(ttl, fontsize=11, pad=6)
-    st.pyplot(fig, clear_figure=True)
-
-_plot_mini(feat2, f"{symbol}  — Smart Money Traps (markers)  {'• 1D' if used_fallback else ''}")
-
-# ------------------ Trap Table ------------------
-st.subheader("Recent Trap / Absorption Events")
+# ---------------- Table ----------------
+st.subheader("Recent Trap Events")
 if traps.empty:
-    st.write("No recent traps detected in the selected window.")
+    st.write("No recent traps found.")
 else:
     st.dataframe(traps.sort_index(ascending=False), use_container_width=True)
 
-# ------------------ Save for Dashboard Fusion ------------------
+# ---------------- Save to Dashboard ----------------
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["smartmoney"] = {
     "symbol": symbol,
     "tf": tf,
-    "mode": "intraday" if not used_fallback and used and used[1] != "1d" else "daily",
-    "used": used,
-    "final_score": float(score),
+    "score": float(score),
     "bias": bias,
-    "traps": traps.reset_index().to_dict(orient="records"),
+    "trap_count": len(traps),
+    "recent_traps": traps.reset_index().to_dict(orient="records"),
 }
-st.success("✅ Smart Money score saved for Dashboard fusion.")
+st.success("✅ Smart Money performance saved to Dashboard fusion.")
