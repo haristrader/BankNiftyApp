@@ -1,196 +1,129 @@
 # pages/Backtest.py
+# -------------------------------------------------------------
+# Full Backtest v2 — BankNifty ATM Options (Intraday / Daily)
+# Virtual Capital + Equity Curve + Chart Overlay + AI Sync
+# -------------------------------------------------------------
+
 import streamlit as st
-import pandas as pd
-import numpy as np
+import pandas as pd, numpy as np, matplotlib.pyplot as plt
+from utils import fetch_smart, DEFAULT_SYMBOL, generate_signals_50pct, simulate_atm_option_trades
 
-# ---- keep single-line imports (safer on Streamlit Cloud) ----
-from utils import DEFAULT_SYMBOL
-from utils import fetch_smart
-from utils import generate_signals_50pct
-from utils import simulate_atm_option_trades
+# -------------------- Page Config --------------------
+st.set_page_config(page_title="Backtest - ATM Options", layout="wide")
+st.title("🧪 BankNifty ATM Backtest — Paper Trade Simulator")
 
+# -------------------- Sidebar Controls --------------------
+st.sidebar.header("⚙️ Settings")
+data_mode = st.sidebar.radio("Data Mode", ["🔴 Intraday (5m)", "🟦 Safe / Daily"], index=0)
+symbol = st.sidebar.text_input("Symbol", value=DEFAULT_SYMBOL)
+prefer_period = st.sidebar.selectbox("Preferred Period", ["5d", "14d", "1mo"], index=0)
+prefer_interval = st.sidebar.selectbox("Preferred Interval", ["5m", "15m", "1h", "1d"], index=0)
+init_sl = st.sidebar.number_input("Initial SL (pts)", 5, 100, 10)
+lot = st.sidebar.number_input("Lot Size", 1, 50, 15)
+theta = st.sidebar.number_input("Theta per Candle (Sim)", 0.0, 1.0, 0.02, 0.01)
+pricing_mode = st.sidebar.radio("Pricing Mode", ["ATM Delta (Sim)", "Index Proxy"], index=0)
 
-# ------------------------------------------------------
-# Backtest – BankNifty ATM Options (Intraday/Daily Toggle)
-# Performance is saved for AI Console (not for Dashboard score)
-# ------------------------------------------------------
+# -------------------- Virtual Capital --------------------
+st.sidebar.markdown("---")
+if "virtual_capital" not in st.session_state:
+    st.session_state.virtual_capital = 10000
+st.sidebar.metric("💰 Virtual Capital", f"₹{st.session_state.virtual_capital:,.0f}")
+if st.sidebar.button("Add ₹10,000 Capital"):
+    st.session_state.virtual_capital += 10000
 
-st.title("🧪 Backtest (Trailing SL) — BankNifty ATM Options")
+# -------------------- Data Fetch --------------------
+with st.spinner("Fetching data..."):
+    if data_mode.startswith("🔴"):
+        df, used, msg = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
+    else:
+        df, used, msg = fetch_smart(symbol, prefer=("3mo", "1d"))
+    if msg:
+        st.info(msg)
+if df.empty:
+    st.error("No data found. Try changing timeframe or wait for market hours.")
+    st.stop()
+st.caption(f"Using {used[0]} / {used[1]} timeframe")
 
-# =========================
-# 1) Data Mode (Trader Style)
-# =========================
-st.markdown("### 📊 Data Source Mode")
-data_mode = st.radio(
-    label="Pick data mode",
-    options=["🔴 Live Intraday (5m)", "🟦 Offline / Daily (Safe)"],
-    index=0,
-    horizontal=True,
-    label_visibility="collapsed",
+# -------------------- Signal Generation --------------------
+sig_df = generate_signals_50pct(df, mid_factor=0.55)
+if sig_df.empty:
+    st.warning("No signals generated.")
+    st.stop()
+st.dataframe(sig_df.tail(10), use_container_width=True)
+
+# -------------------- Run Simulation --------------------
+st.subheader("Backtest Simulation")
+tr, equity, backtest_score = simulate_atm_option_trades(
+    sig_df,
+    signals_col="signal",
+    init_sl_pts=init_sl,
+    lot_size=lot,
+    mode="delta" if pricing_mode.startswith("ATM") else "index",
+    theta_per_candle=theta,
 )
 
-# =========================
-# 2) Controls
-# =========================
-c1, c2, c3 = st.columns([2, 1, 1])
-with c1:
-    symbol = st.text_input("Symbol", value=DEFAULT_SYMBOL)
-with c2:
-    prefer_period = st.selectbox("Preferred Period", ["5d", "14d", "30d", "3mo"], index=0)
-with c3:
-    prefer_interval = st.selectbox("Preferred Interval", ["5m", "15m", "30m", "60m", "1d"], index=0)
-
-st.markdown("---")
-
-c4, c5, c6, c7 = st.columns([1, 1, 1, 1])
-with c4:
-    pricing_mode = st.radio("Pricing Mode", ["ATM Delta (Sim)", "Index Proxy"], index=0)
-with c5:
-    init_sl = st.number_input("Initial SL (option points)", min_value=5, max_value=100, value=10, step=1)
-with c6:
-    lot = st.number_input("Lot Size", min_value=1, max_value=100, value=15, step=1)
-with c7:
-    theta = st.number_input("Theta per candle (sim)", min_value=0.0, max_value=1.0, value=0.00, step=0.01)
-
-# =========================
-# 3) Data Fetch (NSE-first via utils.fetch_smart)
-# =========================
-with st.spinner("Fetching market data..."):
-    if data_mode.startswith("🔴"):
-        # Intraday preference; utils will try NSE 1st then yfinance, then fallbacks
-        df, used, msg = fetch_smart(symbol, prefer=(prefer_period, prefer_interval))
-        if msg:
-            st.info(msg)
-        if df.empty:
-            st.warning("⏳ No intraday data available right now.")
-            st.stop()
-    else:
-        # Force Daily Safe mode (reliable on cloud/weekends)
-        df, used, msg = fetch_smart(symbol, prefer=("3mo", "1d"))
-        if msg:
-            st.info(msg)
-        if df.empty:
-            st.warning("⏳ No prices available right now. Please wait for market hours.")
-            st.stop()
-
-st.caption(f"Using: period={used[0]}  interval={used[1]}")
-
-if df is None or df.empty:
-    st.error("⚠ No data available even after NSE + fallback attempts.")
+if tr is None or tr.empty:
+    st.warning("No trades executed during this range.")
     st.stop()
 
-# =========================
-# 4) Generate Signals (50% rule)
-# =========================
-sig_df = generate_signals_50pct(df, mid_factor=0.5)
-with st.expander("Recent Signals (last 12)", expanded=False):
-    show_cols = [c for c in ["close", "signal"] if c in sig_df.columns]
-    st.dataframe(sig_df[show_cols].tail(12), use_container_width=True)
+# -------------------- Performance Metrics --------------------
+wins = (tr["pnl_points"] > 0).sum()
+losses = (tr["pnl_points"] <= 0).sum()
+total = len(tr)
+winrate = (wins / total * 100) if total > 0 else 0
+pnl_total = tr["pnl_points"].sum()
+st.session_state.virtual_capital += pnl_total
 
-# =========================
-# 5) Run Simulation (ATM delta model or index proxy)
-# =========================
-st.subheader("Simulation Results")
+st.markdown("### 📈 Summary")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Trades", total)
+c2.metric("Win Rate", f"{winrate:.1f}%")
+c3.metric("PnL (₹)", f"{pnl_total:,.0f}")
+c4.metric("Balance (₹)", f"{st.session_state.virtual_capital:,.0f}")
 
-if pricing_mode.startswith("ATM"):
-    tr, equity, backtest_score = simulate_atm_option_trades(
-        sig_df,
-        signals_col="signal",
-        init_sl_pts=init_sl,
-        lot_size=lot,
-        mode="delta",               # CE/PE ATM delta simulation
-        theta_per_candle=theta,
-    )
-else:
-    # Index proxy (delta ≈ 1, no decay) for comparison
-    tr, equity, backtest_score = simulate_atm_option_trades(
-        sig_df,
-        signals_col="signal",
-        init_sl_pts=init_sl,
-        lot_size=lot,
-        mode="index",
-        theta_per_candle=0.0,
-    )
+# -------------------- Equity Curve --------------------
+st.markdown("---")
+equity_series = pd.Series(equity if equity is not None else tr["pnl_points"].cumsum())
+fig, ax = plt.subplots(figsize=(10, 3))
+ax.plot(equity_series.index, equity_series.values, linewidth=1.3)
+ax.set_title("Equity Curve")
+ax.grid(alpha=0.3)
+st.pyplot(fig, clear_figure=True)
 
-# =========================
-# 6) Metrics + Displays
-# =========================
-def _max_drawdown(series: pd.Series) -> float:
-    """Max drawdown of an equity curve (negative value)."""
-    if series is None or len(series) == 0:
-        return 0.0
-    s = pd.Series(series)
-    roll_max = s.cummax()
-    dd = s - roll_max
-    return float(dd.min())  # negative
+# -------------------- Trade Entry/Exit Chart --------------------
+st.markdown("### 📊 Candle Chart with Trade Points")
+fig2, ax2 = plt.subplots(figsize=(11, 4))
+ax2.plot(df.index, df["close"], label="Close", linewidth=0.8)
+ax2.scatter(tr["entry_time"], tr["entry"], marker="^", color="lime", label="Entry", s=60)
+ax2.scatter(tr["exit_time"], tr["exit"], marker="v", color="red", label="Exit", s=60)
+ax2.legend()
+ax2.grid(alpha=0.2)
+st.pyplot(fig2, clear_figure=True)
 
-if tr is None or tr.empty:
-    st.info("No closed trades in this range yet. Try Daily mode or a longer period.")
-    wins = losses = total = 0
-    winrate = 0.0
-    pnl_total = 0.0
-    equity_series = pd.Series(dtype=float)
-    max_dd = 0.0
-else:
-    total = int(len(tr))
-    wins = int((tr["pnl_points"] > 0).sum())
-    losses = int((tr["pnl_points"] <= 0).sum())
-    winrate = (wins / total) * 100.0 if total > 0 else 0.0
-    pnl_total = float(tr["pnl_points"].sum())
-
-    # equity can be Series (returned) or built from trades
-    if equity is None or (isinstance(equity, pd.Series) and equity.empty):
-        equity_series = tr["pnl_points"].cumsum()
-    else:
-        equity_series = pd.Series(equity, index=tr.index[-len(equity):]) if not isinstance(equity, pd.Series) else equity
-
-    max_dd = _max_drawdown(equity_series)
-
-    cA, cB, cC, cD = st.columns(4)
-    cA.metric("Trades", total)
-    cB.metric("Win Rate", f"{winrate:.1f}%")
-    cC.metric("Total PnL (₹)", f"{pnl_total:,.0f}")
-    cD.metric("Max Drawdown (₹)", f"{max_dd:,.0f}")
-
-    st.dataframe(tr.tail(50), use_container_width=True)
-    st.line_chart(equity_series, height=220)
-
-# =========================
-# 7) Save for AI Console (NOT for Dashboard score) + equity curve
-# =========================
-def _serialize_equity(eq: pd.Series) -> list[dict]:
-    """Return list of {'t': ISO, 'v': float} for AI console storage."""
+# -------------------- Store for AI Console --------------------
+def _serialize_equity(eq: pd.Series):
     if eq is None or len(eq) == 0:
         return []
     if isinstance(eq, pd.Series):
-        items = eq.reset_index()
-        tcol = items.columns[0]
-        vcol = items.columns[1]
-        return [{"t": str(items.iloc[i][tcol]), "v": float(items.iloc[i][vcol])} for i in range(len(items))]
-    try:
-        return [{"t": str(i), "v": float(v)} for i, v in enumerate(list(eq))]
-    except Exception:
-        return []
+        return [{"t": str(t), "v": float(v)} for t, v in eq.items()]
+    return [{"t": str(i), "v": float(v)} for i, v in enumerate(eq)]
 
 perf_payload = {
     "symbol": symbol,
-    "data_mode": "intraday" if data_mode.startswith("🔴") else "daily",
-    "used_period": used[0],
-    "used_interval": used[1],
-    "pricing_mode": "ATM_Delta" if pricing_mode.startswith("ATM") else "IndexProxy",
+    "mode": "intraday" if data_mode.startswith("🔴") else "daily",
     "init_sl": float(init_sl),
-    "lot_size": int(lot),
+    "lot": int(lot),
     "theta": float(theta),
-    "trades": int(0 if tr is None else len(tr)),
-    "wins": int(0 if tr is None or tr.empty else (tr["pnl_points"] > 0).sum()),
-    "losses": int(0 if tr is None or tr.empty else (tr["pnl_points"] <= 0).sum()),
-    "winrate": float(0.0 if tr is None or tr.empty else (tr["pnl_points"] > 0).mean() * 100.0),
-    "pnl_total": float(0.0 if tr is None or tr.empty else tr["pnl_points"].sum()),
-    "max_drawdown": float(0.0 if 'equity_series' not in locals() else _max_drawdown(equity_series)),
-    "backtest_score": float(0.0 if tr is None or tr.empty else backtest_score),  # learning signal only
-    "equity_curve": _serialize_equity(locals().get("equity_series", pd.Series(dtype=float))),
+    "trades": total,
+    "wins": int(wins),
+    "losses": int(losses),
+    "winrate": float(winrate),
+    "pnl_total": float(pnl_total),
+    "balance": float(st.session_state.virtual_capital),
+    "backtest_score": float(backtest_score),
+    "equity_curve": _serialize_equity(equity_series),
 }
 
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["backtest"] = perf_payload
-st.success("✅ Backtest performance saved for AI Console learning (summary + equity curve).")
+st.success("✅ Backtest result stored for AI Console learning.")
