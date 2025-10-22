@@ -8,9 +8,18 @@ from typing import Tuple, Optional
 # --- Optional: supabase client (only if you set env and installed supabase) ---
 try:
     from supabase import create_client, Client
-    SUPABASE_URL = ""  # set via env or leave blank
-    SUPABASE_KEY = ""
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and SUPABASE_KEY else None
+
+import os
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
+supabase: Optional[Client] = None
+
+try:
+    if SUPABASE_URL and SUPABASE_KEY:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    print(f"[utils] Supabase init failed: {e}") if SUPABASE_URL and SUPABASE_KEY else None
 except Exception:
     supabase = None
 
