@@ -5,7 +5,9 @@
 # Detects bull/bear traps, absorption, stop-hunts, RSI divergence
 # Outputs Score (0–100) + Bias + Recent trap summary
 # -------------------------------------------------------------
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np
 import mplfinance as mpf
