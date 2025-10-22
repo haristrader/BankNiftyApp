@@ -7,7 +7,9 @@
 # • Candle + Volume + Fib lines + Confidence score
 # • Safe mplfinance render
 # -------------------------------------------------------------
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np
 import mplfinance as mpf
