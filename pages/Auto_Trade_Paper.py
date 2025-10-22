@@ -39,7 +39,7 @@ capital = col9.number_input("Virtual Capital (₹)", 1000.0, 1000000.0, st.sessi
 st.markdown("---")
 st.subheader("📊 Fetching Market Data...")
 
-df_raw, msg = fetch_smart(symbol, (period, interval), mode="auto")
+df, msg = fetch_smart(symbol)
 st.caption(msg)
 
 if df_raw.empty:
