@@ -13,7 +13,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 import streamlit as st
 import pandas as pd, numpy as np
 import mplfinance as mpf
-from utils import DEFAULT_SYMBOL, fetch_smart
+from src.utils import *
+from src.data_engine import *
 
 st.set_page_config(page_title="Price Action (50–60%)", layout="wide")
 st.title("🎯 Price Action — 50–60% Mid-Zone (5m Strategy)")
