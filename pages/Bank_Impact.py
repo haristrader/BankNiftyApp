@@ -3,7 +3,9 @@
 # Bank Leaders Impact (ADV) — Candlestick Micro Charts + Scores
 # Auto Daily Fallback (W1) with Supabase sync + Dashboard Integration
 # -------------------------------------------------------------
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, ta, mplfinance as mpf, datetime
 from utils import fetch_smart, sb_record_module_score
