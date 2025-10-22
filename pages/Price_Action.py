@@ -35,7 +35,7 @@ if mode.startswith("🟦"):
 
 # -------------------- Fetch Data --------------------
 with st.spinner("Fetching 5-minute candles…"):
-    df, used, msg = fetch_smart(symbol, prefer=prefer)
+    df, msg = fetch_smart(symbol)
 
 if msg:
     st.info(msg)
