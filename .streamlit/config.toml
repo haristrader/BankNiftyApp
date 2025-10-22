@@ -11,13 +11,3 @@ enableCORS = false
 enableXsrfProtection = false
 port = 8501
 fileWatcherType = "poll"
-
-[client]
-showErrorDetails = true
-
-[runner]
-magicEnabled = true
-
-[app]
-# 👇 This is the KEY LINE
-pages_dir = "src/pages"
