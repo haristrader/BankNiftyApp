@@ -3,7 +3,9 @@
 # Trend Strength (EMA & RSI) — Multi-TF Engine for BankNifty
 # Intraday + Daily fallback | EMA20, EMA50, RSI14 | Dashboard Sync
 # -------------------------------------------------------------
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, matplotlib.pyplot as plt
 import ta
