@@ -1,13 +1,23 @@
+[theme]
+primaryColor="#FF4B4B"
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#F0F2F6"
+textColor="#000000"
+font="sans serif"
+
 [server]
 headless = true
-port = 8501
 enableCORS = false
 enableXsrfProtection = false
-maxUploadSize = 200
-address = "0.0.0.0"
+port = 8501
+fileWatcherType = "poll"
 
-[browser]
-gatherUsageStats = false
+[client]
+showErrorDetails = true
 
-[theme]
-base = "light"
+[runner]
+magicEnabled = true
+
+[app]
+# 👇 This is the KEY LINE
+pages_dir = "src/pages"
