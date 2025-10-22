@@ -12,7 +12,8 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-from utils import sb_save_candles
+from src.utils import *
+from src.data_engine import *
 
 st.set_page_config(page_title="Data Backfill", layout="wide")
 st.title("📦 Data Backfill → Supabase")
