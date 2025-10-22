@@ -26,7 +26,7 @@ st.sidebar.caption("Tip: Market बंद हो तो 1D चुनें. Intr
 
 # ---------------- Data Fetch ----------------
 with st.spinner("Fetching OHLCV data…"):
-    df, used, msg = fetch_smart(symbol, prefer=(period, interval))
+    df, msg = fetch_smart(symbol)
 
 if msg: st.info(msg)
 if df is None or df.empty:
