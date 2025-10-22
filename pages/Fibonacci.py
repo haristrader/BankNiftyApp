@@ -32,7 +32,7 @@ if data_mode.startswith("🟦") or tf == "1d":
     prefer = ("6mo", "1d")
 
 with st.spinner("Fetching data..."):
-    df, used, msg = fetch_smart(symbol, prefer=prefer)
+    df, msg = fetch_smart(symbol)
 if msg:
     st.info(msg)
 if df is None or df.empty:
