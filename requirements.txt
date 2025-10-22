@@ -1,3 +1,4 @@
+<<<<<<< Updated upstream
 streamlit>=1.32.0
 pandas>=2.1.0
 numpy>=1.26.4
@@ -9,3 +10,13 @@ mplfinance==0.12.10b0
 ta==0.11.0
 requests
 plotly
+=======
+streamlit==1.38.0
+yfinance==0.2.40
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
+python-dateutil==2.9.0.post0
+pytz==2024.1
+altair==5.3.0
+>>>>>>> Stashed changes
