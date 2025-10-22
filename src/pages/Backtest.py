@@ -8,8 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, matplotlib.pyplot as plt
-from utils import fetch_smart, DEFAULT_SYMBOL, generate_signals_50pct, simulate_atm_option_trades
-
+from src.utils import *
+from src.data_engine import *
 # -------------------- Page Config --------------------
 st.set_page_config(page_title="Backtest - ATM Options", layout="wide")
 st.title("🧪 BankNifty ATM Backtest — Paper Trade Simulator")
