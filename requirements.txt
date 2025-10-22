@@ -1,11 +1,11 @@
-streamlit>=1.22.0
-pandas>=2.0.0
-numpy>=1.24.0
-yfinance>=0.2.27
+streamlit>=1.32.0
+pandas>=2.1.0
+numpy>=1.26.4
+yfinance>=0.2.40
+supabase>=2.5.1
+python-dotenv>=1.0.1
 matplotlib==3.8.3
 mplfinance==0.12.10b0
 ta==0.11.0
 requests
-supabase-py>=1.0.0
 plotly
-python-dateutil>=2.8.2
