@@ -36,7 +36,7 @@ prefer = (lookback, prefer[1])
 
 # ---------------- Data fetch ----------------
 with st.spinner("Fetching price/volume data..."):
-    df, used, msg = fetch_smart(symbol, prefer=prefer)
+    df, msg = fetch_smart(symbol)
 
 if msg: st.info(msg)
 if df is None or df.empty:
