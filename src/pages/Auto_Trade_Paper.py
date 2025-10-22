@@ -8,7 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st, pandas as pd, numpy as np, matplotlib.pyplot as plt
 from datetime import datetime
-from utils import fetch_smart, is_market_hours
+from src.utils import *
+from src.data_engine import *
 
 st.set_page_config(page_title="💰 Auto Paper Trade – BankNifty ATM", layout="wide")
 
