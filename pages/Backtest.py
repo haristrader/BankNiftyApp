@@ -3,7 +3,9 @@
 # Full Backtest v2 — BankNifty ATM Options (Intraday / Daily)
 # Virtual Capital + Equity Curve + Chart Overlay + AI Sync
 # -------------------------------------------------------------
-
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, matplotlib.pyplot as plt
 from utils import fetch_smart, DEFAULT_SYMBOL, generate_signals_50pct, simulate_atm_option_trades
