@@ -8,7 +8,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, ta, mplfinance as mpf, datetime
-from utils import fetch_smart, sb_record_module_score
+from src.utils import *
+from src.data_engine import *
 
 st.set_page_config(page_title="Bank Impact", layout="wide", initial_sidebar_state="expanded")
 st.title("🏦 Bank Leaders Sentiment — Impact on BankNifty")
