@@ -1,20 +1,14 @@
 # pages/Bank_Impact.py
-# -------------------------------------------------------------
-# Bank Leaders Impact (ADV) — Candlestick Micro Charts + Scores
-# Auto Daily Fallback (W1) with Supabase sync + Dashboard Integration
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 import streamlit as st
 import pandas as pd, numpy as np, ta, mplfinance as mpf, datetime
 from src.utils import *
-from src.data_engine import *
 
 st.set_page_config(page_title="Bank Impact", layout="wide", initial_sidebar_state="expanded")
 st.title("🏦 Bank Leaders Sentiment — Impact on BankNifty")
 
-# ---------------- Controls ----------------
 c1, c2, c3 = st.columns([1.6, 1.2, 1.1])
 with c1:
     st.caption("Tracking heavyweights: HDFC, ICICI, KOTAK, AXIS, SBI")
@@ -36,7 +30,6 @@ BANKS = [
     ("SBI", "SBIN.NS"),
 ]
 
-# ---------------- Helpers ----------------
 @st.cache_data(ttl=180)
 def _cached_fetch(ticker, prefer_tuple):
     try:
@@ -54,6 +47,7 @@ def _get_with_fallback(ticker, prefer_tuple):
 
 def _add_indicators(df):
     out = df.copy()
+    out = out.rename(columns={c: c.lower() for c in out.columns})
     out["ema20"] = ta.trend.EMAIndicator(out["close"], 20).ema_indicator()
     out["ema50"] = ta.trend.EMAIndicator(out["close"], 50).ema_indicator()
     out["rsi"] = ta.momentum.RSIIndicator(out["close"], 14).rsi()
@@ -64,14 +58,12 @@ def _bank_score(last_row, frame):
     ema_pts += 18 if last_row["close"] > last_row["ema20"] else -8
     ema_pts += 22 if last_row["close"] > last_row["ema50"] else -10
     ema_pts = np.clip(ema_pts, 0, 40)
-
     rsi_scaled = (last_row["rsi"] - 30) / 40
     rsi_pts = np.clip(rsi_scaled, 0, 1) * 30
-
     tail = frame["close"].tail(20)
     if len(tail) >= 5:
         slope = np.polyfit(range(len(tail)), tail, 1)[0]
-        norm = slope / np.std(tail)
+        norm = slope / (np.std(tail) if np.std(tail) != 0 else 1)
         mom_pts = np.clip(norm * 12 + 15, 0, 30)
     else:
         mom_pts = 10
@@ -87,13 +79,12 @@ def _mini_chart(df, title):
     ax.set_title(title, fontsize=9, color="white", pad=3)
     st.pyplot(fig, clear_figure=True)
 
-# ---------------- Fetch + Compute ----------------
 rows, scores, any_fallback = [], [], False
 with st.spinner("Fetching bank data…"):
     for name, ticker in BANKS:
         df, used, msg, fallback = _get_with_fallback(ticker, prefer)
         any_fallback |= fallback
-        if df.empty:
+        if df is None or df.empty:
             st.info(f"{name} — Data unavailable.")
             continue
 
@@ -125,23 +116,24 @@ if len(scores) == 0:
     st.error("No valid data to compute final Bank Impact.")
     st.stop()
 
-bank_score = np.mean(scores)
+bank_score = float(np.mean(scores))
 st.subheader(f"🏦 Final Bank Impact Score: **{bank_score:.0f}/100**")
 
 if bank_score >= 65: st.success("Strong Bullish alignment by leaders.")
 elif bank_score <= 35: st.error("Bearish tone across leaders.")
 else: st.info("Mixed or neutral sentiment.")
 
-# ---------------- Dashboard + Supabase Save ----------------
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["bankimpact"] = {
     "timestamp": datetime.datetime.now().isoformat(),
     "final_score": float(bank_score),
     "mode": "live" if data_mode.startswith("🔴") else "daily",
-    "banks": rows
+    "banks": rows,
+    "used": used
 }
 
 try:
+    from src.data_engine import sb_record_module_score
     sb_record_module_score("bankimpact", float(bank_score), bias="auto", symbol="NSEBANK.NS", tf=tf)
     st.success("✅ Synced with Dashboard + AI Console.")
 except Exception:
