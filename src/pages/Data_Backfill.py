@@ -1,10 +1,4 @@
 # pages/Data_Backfill.py
-# -------------------------------------------------------------
-# One-click historic data loader to Supabase
-# - Daily: from 2020 (full)
-# - 60m: ~2 years
-# - 15m / 5m: last 60 days (yfinance limit)
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -30,22 +24,18 @@ tf_opts = st.multiselect(
 if st.button("Start Backfill"):
     total_rows = 0
     with st.spinner("Downloading & uploading…"):
-        # 1D — full history (max)
         if "1d" in tf_opts:
             df = yf.download(symbol, period="max", interval="1d", auto_adjust=True, progress=False)
             if not df.empty:
                 total_rows += sb_save_candles(df, symbol, "1d")
-        # 60m — up to ~730d
         if "60m" in tf_opts:
             df = yf.download(symbol, period="730d", interval="60m", auto_adjust=True, progress=False)
             if not df.empty:
                 total_rows += sb_save_candles(df, symbol, "60m")
-        # 15m — 60 days
         if "15m" in tf_opts:
             df = yf.download(symbol, period="60d", interval="15m", auto_adjust=True, progress=False)
             if not df.empty:
                 total_rows += sb_save_candles(df, symbol, "15m")
-        # 5m — 60 days
         if "5m" in tf_opts:
             df = yf.download(symbol, period="60d", interval="5m", auto_adjust=True, progress=False)
             if not df.empty:
