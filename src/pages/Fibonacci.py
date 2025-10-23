@@ -1,12 +1,4 @@
 # pages/Fibonacci.py
-# -------------------------------------------------------------
-# Fibonacci Retracement (Pivot-based) — BankNifty (Pro Upgrade)
-# • Weekend-safe via utils.fetch_smart()
-# • True swing detection (pivot highs/lows)
-# • S2 sensitivity: 2-candle pivots
-# • Candle + Volume + Fib lines + Confidence score
-# • Safe mplfinance render
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -14,7 +6,6 @@ import streamlit as st
 import pandas as pd, numpy as np
 import mplfinance as mpf
 from src.utils import *
-from src.data_engine import *
 
 st.set_page_config(page_title="🧭 Fibonacci Retracement", layout="wide")
 st.title("🧭 Fibonacci Retracement — BankNifty (Advanced)")
@@ -30,27 +21,27 @@ with c3:
 
 TF_PREF = {"5m": ("5d", "5m"), "15m": ("14d", "15m"), "1h": ("60d", "60m"), "1d": ("6mo", "1d")}
 prefer = TF_PREF.get(tf, ("6mo", "1d"))
-
 if data_mode.startswith("🟦") or tf == "1d":
     prefer = ("6mo", "1d")
 
 with st.spinner("Fetching data..."):
-    df, msg = fetch_smart(symbol)
+    df, used, msg = fetch_smart(symbol, prefer=prefer)
 if msg:
     st.info(msg)
 if df is None or df.empty:
     st.warning("⚠️ No data available right now.")
     st.stop()
 
+# standardize columns
+df = df.rename(columns={c: c.lower() for c in df.columns})
 st.caption(f"Using data period={used[0]} interval={used[1]} | Candles={len(df)}")
 
 if len(df) < 60:
     st.warning("Not enough candles for reliable Fibonacci structure.")
     st.stop()
 
-# -------------------- Pivot detection --------------------
+# pivot detection
 def detect_pivots(frame: pd.DataFrame, window: int = 2) -> pd.DataFrame:
-    """Detect pivot highs/lows with sensitivity window."""
     h, l = frame["high"].values, frame["low"].values
     n = len(frame)
     piv_high = np.full(n, False)
@@ -65,7 +56,6 @@ def detect_pivots(frame: pd.DataFrame, window: int = 2) -> pd.DataFrame:
     return out
 
 work = detect_pivots(df.copy(), window=2)
-
 ph_idx = work.index[work["piv_high"]]
 pl_idx = work.index[work["piv_low"]]
 if len(ph_idx) == 0 or len(pl_idx) == 0:
@@ -102,7 +92,6 @@ if abs(swing_high - swing_low) < 1e-6:
     st.warning("Swing range too small to compute Fibonacci levels.")
     st.stop()
 
-# -------------------- Build Fib levels --------------------
 def build_fibs(high, low, dirn):
     d = high - low
     if dirn == "up":
@@ -130,7 +119,6 @@ else:
     zone_low, zone_high = min(levels["38.2%"], levels["61.8%"]), max(levels["38.2%"], levels["61.8%"])
     zone_text = "Golden Sell Zone (38.2–61.8%)" if zone_low <= close <= zone_high else "Outside Golden Zone"
 
-# -------------------- Display metrics --------------------
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Direction", direction.upper())
 m2.metric("Swing High", f"{swing_high:.2f}")
@@ -139,16 +127,11 @@ m4.metric("Confidence", f"{score:.1f}/100")
 st.progress(int(score))
 st.info(zone_text)
 
-# -------------------- Plot safely --------------------
-st.subheader("📉 Candlestick + Volume + Fibonacci Levels")
-
-plot_df = df.tail(300).copy()
-plot_df = plot_df.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
+# safe mplfinance render
+plot_df = df.tail(300).copy().rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
 plot_df.index.name = "Date"
-
 fib_plots = [mpf.make_addplot(pd.Series(v, index=plot_df.index), linestyle="--", width=0.8) for v in levels.values()]
 style = mpf.make_mpf_style(base_mpf_style="yahoo", facecolor="#111", gridstyle="--")
-
 fig, _ = mpf.plot(
     plot_df,
     type="candle",
@@ -162,7 +145,6 @@ fig, _ = mpf.plot(
 )
 st.pyplot(fig, clear_figure=True)
 
-# -------------------- Save score --------------------
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["fibonacci"] = {
     "interval": tf,
@@ -171,5 +153,6 @@ st.session_state["performance"]["fibonacci"] = {
     "swing_high": float(swing_high),
     "swing_low": float(swing_low),
     "in_golden_zone": zone_text.startswith("Golden"),
+    "used": used
 }
 st.success("✅ Fibonacci score saved for Dashboard fusion.")
