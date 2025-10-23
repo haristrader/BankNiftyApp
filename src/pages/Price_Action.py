@@ -1,12 +1,4 @@
 # pages/Price_Action.py
-# -------------------------------------------------------------
-# Price Action (50–60% Mid-Zone Rule) — 5m Entry Engine
-# • Works with utils.fetch_smart() (weekend-safe)
-# • Trend alignment (optional)
-# • Confidence scoring (breakout + body + position)
-# • Candlestick + Volume + Signal markers
-# • Auto Dashboard sync
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -14,7 +6,6 @@ import streamlit as st
 import pandas as pd, numpy as np
 import mplfinance as mpf
 from src.utils import *
-from src.data_engine import *
 
 st.set_page_config(page_title="Price Action (50–60%)", layout="wide")
 st.title("🎯 Price Action — 50–60% Mid-Zone (5m Strategy)")
@@ -38,7 +29,7 @@ if mode.startswith("🟦"):
 
 # -------------------- Fetch Data --------------------
 with st.spinner("Fetching 5-minute candles…"):
-    df, msg = fetch_smart(symbol)
+    df, used, msg = fetch_smart(symbol, prefer=prefer)
 
 if msg:
     st.info(msg)
@@ -46,6 +37,7 @@ if df is None or df.empty:
     st.warning("⚠️ No data available. Try during market hours.")
     st.stop()
 
+df = df.rename(columns={c: c.lower() for c in df.columns})
 st.caption(f"Using data: period={used[0]} | interval={used[1]} | candles={len(df)}")
 
 # -------------------- 50–60% Mid-Zone Logic --------------------
@@ -129,7 +121,6 @@ fig, _ = mpf.plot(
 )
 st.pyplot(fig, clear_figure=True)
 
-# -------------------- Table --------------------
 st.subheader("🧾 Signal Summary (last 100 rows)")
 table = sig_df[["signal","confidence","close"]].tail(100).rename(columns={"close":"price"})
 st.dataframe(table, use_container_width=True)
@@ -145,17 +136,16 @@ elif sig == "SELL":
 else:
     st.info(f"Latest Signal: HOLD | Last price {price:.2f}")
 
-# -------------------- Save to Dashboard --------------------
+st.session_state.setdefault("performance", {})
 active = sig_df[sig_df["signal"] != "HOLD"]
 total = len(active)
 avg_conf = float(active["confidence"].mean()) if total > 0 else 0.0
-
-st.session_state.setdefault("performance", {})
 st.session_state["performance"]["priceaction"] = {
     "signals": total,
     "avg_conf": round(avg_conf, 2),
     "last_signal": sig,
     "last_confidence": conf,
-    "score": round((avg_conf + conf) / 2, 2)
+    "score": round((avg_conf + conf) / 2, 2),
+    "used": used
 }
 st.success("✅ Price Action performance saved to Dashboard fusion.")
