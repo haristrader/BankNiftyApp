@@ -1,41 +1,71 @@
-# src/utils.py
-"""
-Central utilities for BankNiftyApp
-- fetch_smart: unified data fetcher (yfinance primary, AlphaVantage optional, CSV cache fallback)
-- caching helpers
-- is_market_hours() check (IST)
-"""
-
 import os
-import time
-import datetime
+import json
+import requests
 import pandas as pd
-
-# Primary data provider
 import yfinance as yf
-
-# Optional: AlphaVantage (if user provides API key in environment)
-try:
-    from alpha_vantage.timeseries import TimeSeries
-except Exception:
-    TimeSeries = None
-
-# Cache settings
-CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data_cache")
-if not os.path.exists(CACHE_DIR):
-    os.makedirs(CACHE_DIR, exist_ok=True)
+from datetime import datetime, timedelta
 
 DEFAULT_SYMBOL = "NSEBANK.NS"
+CACHE_DIR = os.path.join(os.getcwd(), "cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
 
-def _cache_path(symbol: str, period: str, interval: str):
-    safe = symbol.replace("/", "_").replace(":", "_")
-    return os.path.join(CACHE_DIR, f"{safe}__{period}__{interval}.csv")
+def _cache_path(symbol, period, interval):
+    safe = symbol.replace("^", "").replace(".", "_")
+    return os.path.join(CACHE_DIR, f"{safe}_{period}_{interval}.json")
 
-def _cache_save(symbol: str, period: str, interval: str, df: pd.DataFrame):
+def _cache_save(symbol, period, interval, df):
+    path = _cache_path(symbol, period, interval)
+    df.to_json(path, orient="records", date_format="iso")
+
+def _cache_load(symbol, period, interval):
+    path = _cache_path(symbol, period, interval)
+    if os.path.exists(path):
+        try:
+            df = pd.read_json(path)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+    return None
+
+def fetch_smart(symbol=DEFAULT_SYMBOL, period="5d", interval="5m"):
+    """Try yfinance → Finviz API → cached fallback"""
+    # Try cache first
+    cached = _cache_load(symbol, period, interval)
+    if cached is not None:
+        return cached, "cache", "✅ Loaded from cache"
+
+    # Try yfinance
     try:
-        path = _cache_path(symbol, period, interval)
-        # write index as first column for easy reload
-        df.to_csv(path)
+        df = yf.download(symbol, period=period, interval=interval, progress=False)
+        if not df.empty:
+            _cache_save(symbol, period, interval, df)
+            return df, "yfinance", "✅ Data from Yahoo Finance"
+    except Exception as e:
+        print("Yahoo failed:", e)
+
+    # Try alternate source (RapidAPI / Finviz / AlphaVantage)
+    try:
+        url = f"https://query1.finance.yahoo.com/v7/finance/download/{symbol}?period1=0&period2={int(datetime.now().timestamp())}&interval=1d&events=history"
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200 and len(r.text) > 100:
+            df = pd.read_csv(pd.compat.StringIO(r.text))
+            df["Date"] = pd.to_datetime(df["Date"])
+            _cache_save(symbol, period, interval, df)
+            return df, "rapid", "✅ Data from Yahoo CSV endpoint"
+    except Exception as e:
+        print("Fallback API failed:", e)
+
+    # Final fallback
+    if cached is not None:
+        return cached, "cache-old", "⚠ Used old cache data"
+    else:
+        return pd.DataFrame(), "none", "❌ All sources failed"
+
+
+def _cache_save(symbol, period, interval, df):
+    try:
+        df.to_csv(os.path.join(CACHE_DIR, f"{symbol}_{period}_{interval}.csv"))
     except Exception:
         pass
 
