@@ -5,7 +5,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 import streamlit as st
 import pandas as pd, numpy as np, matplotlib.pyplot as plt
 import ta
-from src.utils import *
+from src.data_engine_final import fetch_master as fetch_smart
+from src.data_engine_v3 import fetch_master as fetch_smart
 
 st.set_page_config(page_title="Trend Strength (EMA & RSI)", layout="wide")
 st.title("📈 Trend Strength — EMA + RSI Engine")
