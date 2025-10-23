@@ -1,10 +1,4 @@
 # pages/Smart_Money.py
-# -------------------------------------------------------------
-# Smart Money (PRO++) — True Trap / Absorption Engine for BankNifty
-# Weekend-safe + Institutional Imbalance Factor (IIF)
-# Detects bull/bear traps, absorption, stop-hunts, RSI divergence
-# Outputs Score (0–100) + Bias + Recent trap summary
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -13,12 +7,10 @@ import pandas as pd, numpy as np
 import mplfinance as mpf
 import ta
 from src.utils import *
-from src.data_engine import *
 
 st.set_page_config(page_title="Smart Money (PRO++)", layout="wide")
 st.title("🧠 Smart Money — Trap & Absorption Engine (Pro-Level)")
 
-# ---------------- Controls ----------------
 DEFAULT_SYMBOL = "NSEBANK.NS"
 
 c1, c2, c3, c4 = st.columns([1.3, 1.1, 1.1, 1.3])
@@ -37,18 +29,18 @@ if mode.startswith("🟦") or tf == "1d":
     prefer = ("6mo","1d")
 prefer = (lookback, prefer[1])
 
-# ---------------- Data fetch ----------------
 with st.spinner("Fetching price/volume data..."):
-    df, msg = fetch_smart(symbol)
+    df, used, msg = fetch_smart(symbol, prefer=prefer)
 
 if msg: st.info(msg)
 if df is None or df.empty:
     st.warning("⚠️ No data received. Market may be closed or source unreachable.")
     st.stop()
 
+# ensure lowercase columns
+df = df.rename(columns={c: c.lower() for c in df.columns})
 st.caption(f"Using period={used[0]} interval={used[1]} | candles={len(df)}")
 
-# ---------------- Feature Engineering ----------------
 def build_features(d):
     d = d.rename(columns=str.lower).copy()
     d = d[["open","high","low","close","volume"]].dropna()
@@ -66,30 +58,20 @@ def build_features(d):
 
 feat = build_features(df)
 
-# ---------------- Trap Detection ----------------
 def detect_traps(f):
     f = f.copy()
     f["trap_type"] = ""
     f["upper_break"] = f["high"] > f["prev_high"]
     f["lower_break"] = f["low"] < f["prev_low"]
-
-    # Fake breakouts
     f["reject_down"] = f["upper_break"] & (f["close"] < f["prev_high"])
     f["reject_up"] = f["lower_break"] & (f["close"] > f["prev_low"])
-
-    # Long wicks
     f["long_upper"] = (f["upper_wick"]/f["range"]) > 0.45
     f["long_lower"] = (f["lower_wick"]/f["range"]) > 0.45
-
-    # Stop-hunts
     f["bull_trap"] = (f["reject_down"] | f["long_upper"]) & f["upper_break"]
     f["bear_trap"] = (f["reject_up"] | f["long_lower"]) & f["lower_break"]
-
-    # Absorption
     mid = f["low"] + 0.5*f["range"]
     f["absorb_buy"] = (f["vol_factor"]>1.6) & (f["close"]<mid) & (f["close"]>f["open"])
     f["absorb_sell"] = (f["vol_factor"]>1.6) & (f["close"]>mid) & (f["close"]<f["open"])
-
     f.loc[f["bull_trap"], "trap_type"] = "BULL_TRAP"
     f.loc[f["bear_trap"], "trap_type"] = "BEAR_TRAP"
     f.loc[f["absorb_buy"], "trap_type"] = "ABSORB_BUY"
@@ -98,13 +80,12 @@ def detect_traps(f):
 
 feat2 = detect_traps(feat)
 
-# ---------------- Smart Money Scoring ----------------
 def compute_score(f, window=60):
     d = f.tail(window)
     score = 50
     bull, bear = (d["trap_type"]=="BULL_TRAP").sum(), (d["trap_type"]=="BEAR_TRAP").sum()
     ab_buy, ab_sell = (d["trap_type"]=="ABSORB_BUY").sum(), (d["trap_type"]=="ABSORB_SELL").sum()
-    iif = ((ab_buy + bear) - (ab_sell + bull)) * 2.2  # Institutional Imbalance Factor
+    iif = ((ab_buy + bear) - (ab_sell + bull)) * 2.2
     score += iif
     score = float(np.clip(score, 0, 100))
     bias = "BUY" if score>60 else "SELL" if score<40 else "NEUTRAL"
@@ -113,7 +94,6 @@ def compute_score(f, window=60):
 
 score, bias, traps = compute_score(feat2)
 
-# ---------------- UI ----------------
 st.subheader("Smart Money Sentiment")
 st.progress(int(score))
 if bias=="BUY":
@@ -123,7 +103,7 @@ elif bias=="SELL":
 else:
     st.info(f"Balanced activity — Score {score:.1f}/100 (NEUTRAL)")
 
-# ---------------- Chart ----------------
+# Chart
 st.subheader("📊 Trap Markers (Smart Money View)")
 plot_df = feat2.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"}).copy()
 plot_df.index.name="Date"
@@ -147,21 +127,20 @@ fig, _ = mpf.plot(plot_df, type="candle", volume=True, addplot=apds, style=style
                   title=f"{symbol} • Smart Money {bias}")
 st.pyplot(fig, clear_figure=True)
 
-# ---------------- Table ----------------
 st.subheader("Recent Trap Events")
 if traps.empty:
     st.write("No recent traps found.")
 else:
     st.dataframe(traps.sort_index(ascending=False), use_container_width=True)
 
-# ---------------- Save to Dashboard ----------------
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["smartmoney"] = {
     "symbol": symbol,
-    "tf": tf,
+    "tf": used[1],
     "score": float(score),
     "bias": bias,
     "trap_count": len(traps),
     "recent_traps": traps.reset_index().to_dict(orient="records"),
+    "used": used
 }
 st.success("✅ Smart Money performance saved to Dashboard fusion.")
