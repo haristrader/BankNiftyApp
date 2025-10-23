@@ -1,7 +1,7 @@
 # src/data_engine.py
 import pandas as pd
 from typing import Tuple
-from .utils import get_candles  # relative import; adjust if your project uses absolute imports
+from src.utils import fetch_smart as get_candles
 
 def get_candles_safe(symbol: str, period: str, interval: str) -> pd.DataFrame:
     """
