@@ -1,169 +1,187 @@
 # src/utils.py
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import datetime, time
-from typing import Tuple, Optional
-
-# --- Optional: supabase client (only if you set env and installed supabase) ---
-try:
-    from supabase import create_client, Client
+"""
+Central utilities for BankNiftyApp
+- fetch_smart: unified data fetcher (yfinance primary, AlphaVantage optional, CSV cache fallback)
+- caching helpers
+- is_market_hours() check (IST)
+"""
 
 import os
+import time
+import datetime
+import pandas as pd
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY", "")
-supabase: Optional[Client] = None
+# Primary data provider
+import yfinance as yf
 
+# Optional: AlphaVantage (if user provides API key in environment)
 try:
-    if SUPABASE_URL and SUPABASE_KEY:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    print(f"[utils] Supabase init failed: {e}") if SUPABASE_URL and SUPABASE_KEY else None
+    from alpha_vantage.timeseries import TimeSeries
 except Exception:
-    supabase = None
+    TimeSeries = None
 
-# ----------------- Globals -----------------
+# Cache settings
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "..", "data_cache")
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR, exist_ok=True)
+
 DEFAULT_SYMBOL = "NSEBANK.NS"
-DEFAULT_INTERVAL = "5m"
-DEFAULT_PERIOD = "5d"
 
-# ----------------- Market hours util -----------------
-def is_market_hours() -> bool:
-    """
-    Quick IST-based market hours check.
-    Convert to UTC times: 9:15 IST = 3:45 UTC, 15:30 IST = 10:00 UTC
-    (Simple check — good enough for UI messages)
-    """
-    now_utc = datetime.utcnow().time()
-    open_utc = time(3, 45)
-    close_utc = time(10, 0)
-    return open_utc <= now_utc <= close_utc
+def _cache_path(symbol: str, period: str, interval: str):
+    safe = symbol.replace("/", "_").replace(":", "_")
+    return os.path.join(CACHE_DIR, f"{safe}__{period}__{interval}.csv")
 
-# ----------------- Candle fetcher -----------------
-def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    # Convert multiindex or plain columns to lowercase strings
-    if isinstance(df.columns, pd.MultiIndex):
-        cols = []
-        for c in df.columns:
-            if isinstance(c, tuple):
-                # prefer first meaningful level
-                cols.append(str(c[0]).lower())
-            else:
-                cols.append(str(c).lower())
-        df.columns = cols
-    else:
-        df.columns = [str(c).lower() for c in df.columns]
-    return df
-
-def get_candles(symbol: str = DEFAULT_SYMBOL, period: str = DEFAULT_PERIOD, interval: str = DEFAULT_INTERVAL) -> pd.DataFrame:
-    """
-    Download OHLCV using yfinance and return a clean DataFrame.
-    Returns empty DataFrame on error.
-    """
+def _cache_save(symbol: str, period: str, interval: str, df: pd.DataFrame):
     try:
-        df = yf.download(symbol, period=period, interval=interval, progress=False)
-        if df is None or df.empty:
-            return pd.DataFrame()
-        df = _normalize_columns(df)
-        # Reset index -> keep timestamp as 'date'
-        df = df.reset_index()
-        # some downloads name column 'Datetime' or 'Date'
-        for candidate in ("datetime", "date", "index"):
-            if candidate in df.columns:
-                df = df.rename(columns={candidate: "date"})
-                break
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-        # ensure OHLCV exists (some intervals not supported)
-        required = {"open", "high", "low", "close"}
-        if not required.issubset(set(df.columns)):
-            # try to map common alt names
-            cols = set(df.columns)
-            if "adj close" in cols and "close" not in cols:
-                df = df.rename(columns={"adj close": "close"})
-            else:
-                # missing required fields -> return empty so callers can handle gracefully
-                return pd.DataFrame()
-        df = df.dropna(how="any")
-        return df
-    except Exception as e:
-        print(f"[utils.get_candles] Exception: {e}")
-        return pd.DataFrame()
+        path = _cache_path(symbol, period, interval)
+        # write index as first column for easy reload
+        df.to_csv(path)
+    except Exception:
+        pass
 
-# ----------------- Smart wrapper -----------------
-def fetch_smart(symbol: str = DEFAULT_SYMBOL, period: str = DEFAULT_PERIOD, interval: str = DEFAULT_INTERVAL) -> Tuple[pd.DataFrame, str]:
-    """
-    Unified fetch for pages. Returns (df, message).
-    Keeps signature simple (no unexpected kwargs).
-    """
-    try:
-        df = get_candles(symbol=symbol, period=period, interval=interval)
-        if df.empty:
-            msg = "No data received. Market may be closed or source unreachable."
-            return pd.DataFrame(), msg
-        return df, f"Fetched {len(df)} rows for {symbol} ({interval})"
-    except Exception as e:
-        return pd.DataFrame(), f"Fetch error: {e}"
+def _cache_load(symbol: str, period: str, interval: str):
+    path = _cache_path(symbol, period, interval)
+    if os.path.exists(path):
+        try:
+            df = pd.read_csv(path, index_col=0, parse_dates=True)
+            return df
+        except Exception:
+            return None
+    return None
 
-# ----------------- Save candles (supabase) -----------------
-def save_candles_supabase(df: pd.DataFrame, table_name: str = "candles") -> str:
-    if df is None or df.empty:
-        return "No data to save"
-    if supabase is None:
-        return "Supabase not configured"
-    try:
-        records = df.to_dict(orient="records")
-        supabase.table(table_name).insert(records).execute()
-        return f"Saved {len(records)} rows to {table_name}"
-    except Exception as e:
-        return f"Supabase save error: {e}"
-
-# backward-compatible alias
-def sb_save_candles(*args, **kwargs):
-    return save_candles_supabase(*args, **kwargs)
-
-# ----------------- Signal generator -----------------
-def generate_signals_50pct(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return pd.DataFrame()
-    if not {"high", "low", "close"}.issubset(set(df.columns)):
-        return pd.DataFrame()
-    df = df.copy()
-    df["mid"] = (df["high"] + df["low"]) / 2.0
-    df["signal"] = np.where(df["close"] > df["mid"], 1, -1)
-    return df
-
-# ----------------- ATM simulation stub (used by backtest pages) -----------------
-def simulate_atm_option_trades(df: pd.DataFrame, **kwargs) -> dict:
-    """
-    Minimal stub to satisfy imports. Returns a simple summary.
-    Replace with real simulation when available.
-    """
-    if df is None or df.empty:
-        return {"trades": [], "summary": "no data"}
-    # simple placeholder: count rows
-    return {"trades": [], "summary": f"simulated over {len(df)} bars"}
-
-# ----------------- 50pct alias same name used elsewhere -----------------
-def generate_signals_50pct_simple(df):
-    return generate_signals_50pct(df)
-
-# ----------------- Record module score (AI console) -----------------
-def sb_record_module_score(module: str, score: float, table_name: str = "module_scores") -> bool:
-    try:
-        if supabase is None:
-            print("[sb_record_module_score] Supabase not configured")
-            return False
-        record = {"module": module, "score": float(score), "ts": datetime.utcnow().isoformat()}
-        supabase.table(table_name).insert(record).execute()
-        return True
-    except Exception as e:
-        print(f"[sb_record_module_score] Error: {e}")
+def is_market_hours_ist() -> bool:
+    # Indian market hours: Mon-Fri 09:15–15:30 IST
+    now_utc = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+    ist = now_utc.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+    if ist.weekday() >= 5:
         return False
+    h, m = ist.hour, ist.minute
+    start = (9, 15)
+    end = (15, 30)
+    after_start = (h > start[0]) or (h == start[0] and m >= start[1])
+    before_end = (h < end[0]) or (h == end[0] and m <= end[1])
+    return after_start and before_end
 
-# ----------------- Helpers -----------------
-def format_date(dt):
-    if isinstance(dt, (pd.Timestamp, datetime)):
-        return dt.isoformat()
-    return str(dt)
+def _try_alpha_vantage(symbol: str, period: str, interval: str):
+    # optional fallback: AlphaVantage (requires ALPHAVANTAGE_API_KEY in env)
+    api_key = os.environ.get("ALPHAVANTAGE_API_KEY")
+    if api_key is None or TimeSeries is None:
+        return None, "AlphaVantage unavailable"
+    try:
+        ts = TimeSeries(key=api_key, output_format='pandas', indexing_type='date')
+        # map to a function based on interval
+        if interval in ("1d", "daily"):
+            df, meta = ts.get_daily_adjusted(symbol.replace(".NS", ""), outputsize='full')
+            df = df.rename(columns={"1. open":"open","2. high":"high","3. low":"low","4. close":"close","6. volume":"volume"})
+            df = df[["open","high","low","close","volume"]]
+            return df, "AlphaVantage (daily)"
+        # intraday support (can be 1min,5min,15min,30min,60min)
+        if interval.endswith("m"):
+            mins = interval.replace("m","")
+            func = getattr(ts, f"get_intraday", None)
+            if func:
+                df, meta = ts.get_intraday(symbol.replace(".NS", ""), interval=f"{mins}min", outputsize='compact')
+                df = df.rename(columns={"1. open":"open","2. high":"high","3. low":"low","4. close":"close","5. volume":"volume"})
+                return df[["open","high","low","close","volume"]], "AlphaVantage (intraday)"
+    except Exception as e:
+        return None, f"AlphaVantage error: {e}"
+    return None, "AlphaVantage: unsupported interval"
+
+def _read_period_days(period: str):
+    # convert common periods to days (best-effort)
+    if isinstance(period, (list, tuple)):
+        period = period[0]
+    if isinstance(period, str):
+        if period.endswith("d"):
+            return int(period[:-1])
+        if period.endswith("mo"):
+            return int(period[:-2]) * 30
+        if period == "max":
+            return 3650
+    return 7
+
+def fetch_smart(symbol: str = DEFAULT_SYMBOL, period: str = "5d", interval: str = "5m", prefer=None):
+    """
+    Universal fetcher used across pages.
+    - Accepts prefer=(period, interval) or period & interval separately.
+    Returns: (df, used, msg)
+      df -> pandas DataFrame with OHLCV and datetime index
+      used -> (period_used, interval_used)
+      msg -> status string for UI
+    Behavior:
+      - Try yfinance.download (primary)
+      - If fails or empty, try AlphaVantage if API key present
+      - If still fails, try cached CSV for requested period/interval
+      - Last fallback: try daily 6mo/1d via yfinance
+    """
+
+    # allow prefer tuple
+    if prefer and isinstance(prefer, (list, tuple)) and len(prefer) == 2:
+        period, interval = prefer[0], prefer[1]
+    used = (period, interval)
+    msg_parts = []
+
+    # 1) Primary: yfinance
+    try:
+        # yfinance expects e.g., period="5d", interval="5m"
+        df = yf.download(symbol, period=period, interval=interval, progress=False, auto_adjust=False)
+        if df is not None and not df.empty:
+            # Ensure standard column names lowercase
+            df = df.rename(columns={c: c.lower() for c in df.columns})
+            _cache_save(symbol, period, interval, df)
+            msg_parts.append(f"Live: yfinance ({period}/{interval})")
+            return df, used, " | ".join(msg_parts)
+        else:
+            msg_parts.append("yfinance returned empty")
+    except Exception as e:
+        msg_parts.append(f"yfinance error: {e}")
+
+    # 2) Try AlphaVantage (if configured)
+    av_df, av_msg = _try_alpha_vantage(symbol, period, interval)
+    if av_df is not None and not av_df.empty:
+        av_df = av_df.rename(columns={c: c.lower() for c in av_df.columns})
+        _cache_save(symbol, period, interval, av_df)
+        msg_parts.append(av_msg)
+        return av_df, used, " | ".join(msg_parts)
+    else:
+        msg_parts.append(av_msg)
+
+    # 3) Check local cache (specific period/interval)
+    cached = _cache_load(symbol, period, interval)
+    if cached is not None and not cached.empty:
+        msg_parts.append(f"Cache used: {period}/{interval} ({len(cached)} rows)")
+        return cached, used, " | ".join(msg_parts)
+
+    # 4) Daily fallback (6mo/1d)
+    try:
+        df_daily = yf.download(symbol, period="6mo", interval="1d", progress=False, auto_adjust=False)
+        if df_daily is not None and not df_daily.empty:
+            df_daily = df_daily.rename(columns={c: c.lower() for c in df_daily.columns})
+            _cache_save(symbol, "6mo", "1d", df_daily)
+            msg_parts.append("Fallback: yfinance (6mo/1d)")
+            return df_daily, ("6mo", "1d"), " | ".join(msg_parts)
+        else:
+            msg_parts.append("daily fallback empty")
+    except Exception as e:
+        msg_parts.append(f"daily fallback error: {e}")
+
+    # 5) Last resort: try any cached file that matches symbol
+    # pick most recent cache for symbol
+    candidates = []
+    base = os.path.join(CACHE_DIR, "")
+    for f in os.listdir(CACHE_DIR):
+        if f.startswith(symbol.replace("/", "_")) or f.startswith(symbol.replace(".", "_")):
+            candidates.append(os.path.join(CACHE_DIR, f))
+    if candidates:
+        # prefer largest/more recent
+        candidates = sorted(candidates, key=lambda p: os.path.getmtime(p), reverse=True)
+        try:
+            df_any = pd.read_csv(candidates[0], index_col=0, parse_dates=True)
+            msg_parts.append(f"Using other cache: {os.path.basename(candidates[0])}")
+            return df_any, used, " | ".join(msg_parts)
+        except Exception:
+            msg_parts.append("other cache load failed")
+
+    # completely failed
+    msg_parts.append("All sources failed")
+    return pd.DataFrame(), used, " | ".join(msg_parts)
