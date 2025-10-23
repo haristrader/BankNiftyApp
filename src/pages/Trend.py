@@ -1,8 +1,4 @@
 # pages/Trend.py
-# -------------------------------------------------------------
-# Trend Strength (EMA & RSI) — Multi-TF Engine for BankNifty
-# Intraday + Daily fallback | EMA20, EMA50, RSI14 | Dashboard Sync
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -10,7 +6,7 @@ import streamlit as st
 import pandas as pd, numpy as np, matplotlib.pyplot as plt
 import ta
 from src.utils import *
-from src.data_engine import *
+
 st.set_page_config(page_title="Trend Strength (EMA & RSI)", layout="wide")
 st.title("📈 Trend Strength — EMA + RSI Engine")
 
@@ -28,13 +24,15 @@ st.sidebar.caption("Tip: Market बंद हो तो 1D चुनें. Intr
 
 # ---------------- Data Fetch ----------------
 with st.spinner("Fetching OHLCV data…"):
-    df, msg = fetch_smart(symbol)
+    df, used, msg = fetch_smart(symbol, prefer=(period, interval))
 
 if msg: st.info(msg)
 if df is None or df.empty:
     st.error("⚠️ No data fetched. Try another timeframe or wait for market hours.")
     st.stop()
 
+# ensure lowercase columns
+df = df.rename(columns={c: c.lower() for c in df.columns})
 # ---------------- Indicators ----------------
 df["ema20"] = ta.trend.EMAIndicator(df["close"], 20).ema_indicator()
 df["ema50"] = ta.trend.EMAIndicator(df["close"], 50).ema_indicator()
@@ -56,7 +54,7 @@ def trend_score(row):
     return np.clip(norm, 0, 100)
 
 idf["score"] = idf.apply(trend_score, axis=1)
-final_score = idf["score"].iloc[-1]
+final_score = float(idf["score"].iloc[-1])
 
 bias = "BUY" if final_score >= 60 else "SELL" if final_score <= 40 else "NEUTRAL"
 
@@ -110,22 +108,9 @@ else: st.info("Neutral / Range — wait for other confirmations.")
 st.session_state.setdefault("performance", {})
 st.session_state["performance"]["trend"] = {
     "symbol": symbol,
-    "tf": used[1],
+    "tf": used[1] if used else interval,
     "final_score": float(final_score),
     "bias": bias,
+    "used": used
 }
 st.success("✅ Trend module synced with Dashboard.")
-
-# ---------------- Supabase Save ----------------
-try:
-    sb_save_candles(df, symbol, used[1])
-    sb_record_module_score(
-        module="trend",
-        score=float(final_score),
-        bias=bias,
-        symbol=symbol,
-        tf=used[1],
-        meta={"note": "auto-saved from trend module"}
-    )
-except Exception:
-    pass
