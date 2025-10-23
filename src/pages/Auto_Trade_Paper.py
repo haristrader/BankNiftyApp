@@ -1,8 +1,4 @@
 # pages/Auto_Trade_Paper.py
-# -------------------------------------------------------------
-# Full Auto Paper-Trade Simulation – BankNifty ATM Options
-# Upgraded 2025-10-21 | Trader Edition with Virtual Capital & Chart
-# -------------------------------------------------------------
 import sys, os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -12,13 +8,10 @@ from src.utils import *
 from src.data_engine import *
 
 st.set_page_config(page_title="💰 Auto Paper Trade – BankNifty ATM", layout="wide")
-
 st.title("💹 Auto Paper-Trade (BankNifty ATM Options)")
 st.caption("5m Price-Action Entry | Adaptive Theta | Trailing SL | Virtual Capital Simulation")
 
-# -------------------------------------------------------------
 # Parameters
-# -------------------------------------------------------------
 col1, col2, col3 = st.columns([1, 1, 1])
 symbol = col1.text_input("Symbol", "NSEBANK.NS")
 period = col2.selectbox("Period", ["5d", "7d", "14d", "1mo"], index=0)
@@ -36,22 +29,19 @@ if "virtual_capital" not in st.session_state:
     st.session_state["virtual_capital"] = 10000.0
 capital = col9.number_input("Virtual Capital (₹)", 1000.0, 1000000.0, st.session_state["virtual_capital"], step=500.0)
 
-# -------------------------------------------------------------
-# Fetch Data
-# -------------------------------------------------------------
 st.markdown("---")
 st.subheader("📊 Fetching Market Data...")
 
-df, msg = fetch_smart(symbol)
+df, used, msg = fetch_smart(symbol, prefer=(period, interval))
 st.caption(msg)
 
+# define df_raw to avoid NameError
+df_raw = df.copy() if df is not None else pd.DataFrame()
 if df_raw.empty:
     st.error("⚠️ No data found. Try daily or larger period.")
     st.stop()
 
-# -------------------------------------------------------------
-# Signal Logic
-# -------------------------------------------------------------
+# Signal logic (keeps same)
 def generate_pa_signals(df, low=0.50, high=0.60):
     df = df.copy()
     ph, pl = df["high"].shift(1), df["low"].shift(1)
@@ -64,9 +54,6 @@ def generate_pa_signals(df, low=0.50, high=0.60):
 df = generate_pa_signals(df_raw)
 st.success("✅ Signals generated.")
 
-# -------------------------------------------------------------
-# Simulation Logic
-# -------------------------------------------------------------
 def simulate_trades(df, delta, theta, seed, sl0, lot, capital):
     trades = []
     eq = capital
@@ -87,7 +74,6 @@ def simulate_trades(df, delta, theta, seed, sl0, lot, capital):
         entry_price = seed
         side = "CE" if sig == "BUY" else "PE"
 
-        # Generate synthetic premium path
         idx_prices = df["close"].iloc[entry_idx:].values
         prem = [entry_price]
         for j in range(1, len(idx_prices)):
@@ -96,7 +82,6 @@ def simulate_trades(df, delta, theta, seed, sl0, lot, capital):
             next_p = prem[-1] + delta * move - theta
             prem.append(max(0.5, next_p))
 
-        # Trailing SL logic
         sl = entry_price - sl0
         pnl, exit_idx = 0, None
         for k in range(1, len(prem)):
@@ -136,22 +121,16 @@ def simulate_trades(df, delta, theta, seed, sl0, lot, capital):
         i = exit_idx + 1
     return pd.DataFrame(trades), eq
 
-# -------------------------------------------------------------
-# Run Simulation
-# -------------------------------------------------------------
-if not is_market_hours():
+if not is_market_hours_ist():
     theta_bar *= 1.3
 
 with st.spinner("Running paper-trade simulation..."):
     trades, final_capital = simulate_trades(df, delta, theta_bar, seed_prem, initial_sl, lot, capital)
 
-if trades.empty:
+if trades is None or trades.empty:
     st.warning("No trades generated.")
     st.stop()
 
-# -------------------------------------------------------------
-# Results
-# -------------------------------------------------------------
 st.subheader("📈 Trade Summary")
 wins = (trades["pnl_pts"] > 0).sum()
 losses = (trades["pnl_pts"] <= 0).sum()
@@ -165,18 +144,13 @@ c4.metric("Final Capital (₹)", f"{final_capital:,.0f}")
 
 st.session_state["virtual_capital"] = final_capital
 
-# -------------------------------------------------------------
-# Candle Chart Visualization
-# -------------------------------------------------------------
 st.markdown("---")
 st.subheader("🕯️ Candle Chart with Entry/Exit Points")
 
 fig, ax = plt.subplots(figsize=(10, 4))
-ax.plot(df.index, df["close"], color="white", linewidth=1)
-ax.set_facecolor("#111")
+ax.plot(df.index, df["close"], linewidth=1)
 ax.grid(True, linestyle="--", alpha=0.3)
 
-# Plot entries and exits
 for _, row in trades.iterrows():
     entry_t, exit_t = row["entry_time"], row["exit_time"]
     try:
@@ -187,22 +161,9 @@ for _, row in trades.iterrows():
     except Exception:
         pass
 
-ax.set_title(f"{symbol}  |  Trades: {len(trades)}  |  Capital: ₹{final_capital:,.0f}", color="cyan")
-ax.tick_params(colors="white")
+ax.set_title(f"{symbol}  |  Trades: {len(trades)}  |  Capital: ₹{final_capital:,.0f}")
 st.pyplot(fig)
 
-# -------------------------------------------------------------
-# Capital Management
-# -------------------------------------------------------------
-if final_capital <= 500:
-    st.error("💸 Capital exhausted!")
-    if st.button("Add ₹10,000 Virtual Capital"):
-        st.session_state["virtual_capital"] += 10000
-        st.experimental_rerun()
-
-# -------------------------------------------------------------
-# Download and save session
-# -------------------------------------------------------------
 st.markdown("---")
 st.dataframe(trades, use_container_width=True)
 st.download_button(
